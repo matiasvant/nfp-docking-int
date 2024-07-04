@@ -13,10 +13,11 @@ from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_ma
 import matplotlib.pyplot as plt
 import sys
 from networkP import dockingProtocol
-from util import buildFeats, dockingDataset, labelsToDF
+from util import *
 import time
 from scipy.stats import linregress
 from sklearn.preprocessing import StandardScaler
+import pickle
 
 parser = argparse.ArgumentParser()
 
@@ -97,7 +98,7 @@ trainData, valData, testData = np.split(allData.sample(frac=1),
 print(f'merged df shapes: {trainData.shape}, {valData.shape}, {testData.shape}')
 
 
-ID_column = allData.columns[allData.columns.str.contains('zinc_id|Compound ID', case=False, regex=True)].tolist()[0]
+ID_column = get_ID_type(allData)
 
 xTrain = trainData[[ID_column, 'smiles']].values.tolist()
 yTrain = trainData['labels'].values
@@ -236,10 +237,11 @@ for epoch in range(1, epochs + 1):
     validR.append(r_squared)
     print(f'\nValidation Results:\nLoss: {valid_loss:>8f}, R^2: {r_squared:>0.1f}%\n------------------------------------------------')
     
-    # if valid_loss < bestVLoss:
-    #     bestVLoss = valid_loss
-    #     model_path = f'model_{epoch}'
-    #     torch.save(model.state_dict(), model_path)
+    if valid_loss < bestVLoss:
+        bestVLoss = valid_loss
+        model_path = f'{data}_model.pth'
+        print(f"params, data, model_path: {modelParams, data, model_path}")
+        model.save(modelParams, data, model_path)
 
     if earlyStop.early_stop(valid_loss):
         print(f'validation loss converged to ~{valid_loss}')

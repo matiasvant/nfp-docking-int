@@ -13,7 +13,7 @@ from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_ma
 import matplotlib.pyplot as plt
 import sys
 from networkP import dockingProtocol, GraphLookup
-from util import buildFeats, dockingDataset, labelsToDF, find_item_with_keywords
+from util import *
 import time
 from rdkit import Chem
 from rdkit.Chem import Draw
@@ -27,7 +27,7 @@ def group_most_associated_w_fp_feature(fp_i, fp_size, degree_activations):
 
     # for each molecule, find the degree-atom pair with the highest value at the fingerprint feature index
     for degree, activations_dict in degree_activations.items():
-        for zinc_id, tensor in activations_dict.items():
+        for ID, tensor in activations_dict.items():
             assert fp_size == tensor.shape[1], f"fp_size {fp_size} does not match hidden layer feature size {tensor.shape[1]}"
             assert fp_i < tensor.shape[1], f"Index {fp_i} is out of bounds for tensor shape {tensor.shape[1]}"
             
@@ -35,13 +35,13 @@ def group_most_associated_w_fp_feature(fp_i, fp_size, degree_activations):
             max_index = torch.argmax(assoc_values).item()
             max_activations = tensor[max_index, :]
 
-            if zinc_id not in most_associated_activations:
-                most_associated_activations[zinc_id] = (degree, max_activations, max_index)
+            if ID not in most_associated_activations:
+                most_associated_activations[ID] = (degree, max_activations, max_index)
             else:
-                old_max = most_associated_activations[zinc_id][1][fp_i]
+                old_max = most_associated_activations[ID][1][fp_i]
                 new_max = max_activations[fp_i]
                 if new_max>old_max:
-                    most_associated_activations[zinc_id] = (degree, max_activations, max_index)
+                    most_associated_activations[ID] = (degree, max_activations, max_index)
 
     return most_associated_activations
 
@@ -52,7 +52,17 @@ def get_smile_from_zinc_id(zinc_id, reference):
         smile = smileData.loc[zinc_id, 'smile']
         return smile
     except KeyError:
-        return f"ZINC ID {zinc_id} not found."
+        print(f"ZINC ID {zinc_id} not found.")
+        return None
+
+
+def get_smile_from_dataset(ID, DataFrame):
+    try:
+        smile = smileData.loc[ID, 'smile']
+        return smile
+    except KeyError:
+        print(f"ID {ID} not found.")
+        return None
 
 
 def get_atom_neighborhood(smile, center_atom_i, max_degree):
@@ -88,17 +98,31 @@ def draw_molecule_with_highlights(filename, smiles, highlight_atoms):
     plt.close(fig)
 
 
-def setup_dataset(input_data, name, reference, input_only=False):
+def setup_dataset(input_data, name, reference, input_only=False, no_graph=False):
     # input zIDs
-    allData = labelsToDF(f'./data/dock_{input_data}.txt')
-    allData.set_index('zinc_id', inplace=True)
-    allData = pd.merge(allData, reference, on='zinc_id')
+    data_path = find_item_with_keywords(search_dir='./data',keywords=[input_data],file=True)[0]
+    allData = labelsToDF(data_path)
+    ID = get_ID_type(allData)
+    allData.set_index(ID, inplace=True)
 
-    xData = [(index, row['smile']) for index, row in allData.iterrows()] # (zinc_id, smile)
+    # Ensure consistent 'smile' label; or get smiles from ZID reference file
+    smile_names = ['smiles','smile','SMILEs','SMILES','SMILE']
+    if any(option in allData.columns for option in smile_names):
+        for option in smile_names:
+            if option in allData.columns:
+                allData.rename(columns={option: 'smile'}, inplace=True)
+    else:
+        allData = pd.merge(allData, reference, on='ID')
+
+    xData = [[index, row['smile']] for index, row in allData.iterrows()] # (ID, smile)
     if input_only:
         yData = [0] * len(xData)
     else: 
         yData = allData['labels'].values.tolist()
+
+    if no_graph:
+        if input_only: return xData
+        return xData, yData
 
     dataset = dockingDataset(train=xData, 
                             labels=yData,
@@ -118,7 +142,6 @@ def find_most_predictive_features(loaded_model, orig_data, reference):
     for batch, (a, b, e, (y, zID)) in enumerate(dataloader):
             at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
             _, fps = loaded_model((at, bo, ed), return_fp=True)
-            print("FPS:", fps.shape)
             fps = fps.detach().numpy()
 
             for i, z_id in enumerate(zID):
@@ -128,21 +151,23 @@ def find_most_predictive_features(loaded_model, orig_data, reference):
     orig_data_paths = find_item_with_keywords(search_dir="./data", keywords=[orig_data], file=True)
     orig_data_path = min(orig_data_paths, key=len)
     origData = labelsToDF(orig_data_path)
-    origData.set_index('zinc_id', inplace=True)
+    
+    ID = get_ID_type(origData)
+    origData.set_index(ID, inplace=True)
     np_index = origData.index.values
-    np_array = origData.values
+    np_array = origData['labels'].values.reshape(-1, 1)
 
     m = np_index.shape[0]
     first_fp = next(iter(fp_dict.values()))
     fp_len = first_fp.shape[0]
     n = fp_len
-    fp_arr = np.zeros((m, n))
+    fp_arr = np.zeros((m, n)) # num-molecules x num-fingerprint-features
 
-    for i, z_id in enumerate(np_index):
-        if z_id not in fp_dict:
+    for i, ID in enumerate(np_index):
+        if ID not in fp_dict:
             print(f"Fingerprint not found for molecule {i} in original dataset.")
             continue
-        fp = fp_dict[z_id] # makes sure z_id<->z_id,fp aligned
+        fp = fp_dict[ID] # makes sure ID<->(ID,fp) aligned
         fp_arr[i,:] = fp
     merged_arr = np.concatenate([np_array, fp_arr], axis=1)
 
@@ -170,7 +195,7 @@ device = (
 )
 print(f"Using {device} device")
 
-input = "acease_pruned"
+input = "sol_pruned"
 
 # reference SMILEs/zID
 smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
@@ -181,7 +206,7 @@ dataset = setup_dataset(input_data=input, name="Get conv. activations", referenc
 dataloader = DataLoader(dataset, batch_size=12, shuffle=False)
 
 # import model
-model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/acease_pruned_model_1.pt"
+model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/model_17.pth"
 checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 model = dockingProtocol(params=checkpoint['params'])
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -212,14 +237,30 @@ fp_len = first_fp.shape[0]
 
 best_subgraphs_dict = group_most_associated_w_fp_feature(best_feat['Feature #'],fp_len,degree_activations)
 
-for i, (zinc_id, atomTuple) in enumerate(best_subgraphs_dict.items()):
-    smile = get_smile_from_zinc_id(zinc_id, smileData)
+for i, (ID, atomTuple) in enumerate(best_subgraphs_dict.items()):
+    if 'ZINC' in ID: # get smiles from reference
+        print(f"ZID:{ID}")
+        smile = get_smile_from_zinc_id(ID, smileData)
+    else:
+        if i==0: # get smiles from orig dataset
+            orig_IDs = setup_dataset(input_data=checkpoint['dataset'], name="Retrieve SMILEs", reference=smileData, input_only=True, no_graph=True)
+            orig_IDs = np.array(orig_IDs)
+            orig_IDs = pd.DataFrame(orig_IDs, index=orig_IDs[:, 0], columns=['ID', 'smile'])
+        try:
+            smile = orig_IDs.loc[ID][1]
+        except KeyError:
+            smile = None
+            print(f"Smile not found for{ID}")
+            continue
+    
     degree = atomTuple[0]
     atom_index = atomTuple[2]
     atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
     if i==0 or i==1 or i==2:
-        print(f"Molecule {i}:", zinc_id, "- best atoms:", atom_neighborhood)
-        draw_molecule_with_highlights(f"{zinc_id}.png", smile, atom_neighborhood) # note both are RDKit ordering, indices align
+        print(f"Molecule {i}:", ID, "- best atoms:", atom_neighborhood)
+        ID_name = ''.join(ID.split())
+        draw_molecule_with_highlights(f"{ID_name}.png", smile, atom_neighborhood) # note both are RDKit ordering, indices align
+
 
 
 

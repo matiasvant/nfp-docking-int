@@ -215,8 +215,8 @@ class dockingANN(nn.Module):
             self.ann.add_module(f'relu act {j}', nn.ReLU())
             self.ann.add_module(f'batch norm {j}', nn.BatchNorm1d(o))
             self.ann.add_module(f'dropout {j}', nn.Dropout(self.dropout))
-        # self.ann.add_module(f'output', nn.Sigmoid()) # classification
-        self.ann.add_module(f'output', nn.Linear(self.arch[-1][1], 1)) # for regression
+        self.ann.add_module(f'output', nn.Sigmoid()) # classification
+        # self.ann.add_module(f'output', nn.Linear(self.arch[-1][1], 1)) # for regression
         # self.ann.add_module(f'output', nn.Tanh()) # regression alt. func
 
     def forward(self, input, return_fp=False):

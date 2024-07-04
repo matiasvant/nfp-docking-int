@@ -144,3 +144,7 @@ def labelsToDF(fname):
         df = pd.DataFrame(arr, columns=['labels','zinc_id'])
     
     return df
+
+def get_ID_type(DataFrame):
+    ID_column_name = DataFrame.columns[DataFrame.columns.str.contains('zinc_id|Compound ID', case=False, regex=True)].tolist()[0]
+    return ID_column_name

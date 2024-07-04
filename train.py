@@ -13,7 +13,7 @@ from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_ma
 import matplotlib.pyplot as plt
 import sys
 from networkP import dockingProtocol
-from util import buildFeats
+from util import *
 import time
 
 parser = argparse.ArgumentParser()
