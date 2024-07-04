@@ -11,4 +11,4 @@
 #SBATCH --partition=week
 
 module load python-libs
-python createModels.py -f 64 -p acease_pruned
+python createModels.py -f 64 -d acease_pruned

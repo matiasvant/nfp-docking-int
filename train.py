@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-dropout','--df',required=True)
 parser.add_argument('-learn_rate','--lr',required=True)
 parser.add_argument('-os','--os',required=True)
-parser.add_argument('-protein', '--pro', required=True)
+parser.add_argument('-data', '--d', required=True)
 parser.add_argument('-bs', '--batch_size', required=True)
 parser.add_argument('-fplen', '--fplength', required=True)
 parser.add_argument('-mnum', '--model_number', required=True)
@@ -34,7 +34,7 @@ lr=float(cmdlArgs.lr)
 oss=int(cmdlArgs.os)
 wd=float(cmdlArgs.weight_decay)
 bs=int(cmdlArgs.batch_size)
-protein = cmdlArgs.pro
+data = cmdlArgs.d
 fplCmd = int(cmdlArgs.fplength)
 mn = cmdlArgs.model_number
 
@@ -115,7 +115,7 @@ def labelsToDF(fname):
     return df
 
 # 70-15-15 split
-allData = labelsToDF(f'../../data/dock_{protein}.txt')
+allData = labelsToDF(f'../../data/{data}.txt')
 allData.set_index('zinc_id', inplace=True)
 trainData, validationData, testData = np.split(allData.sample(frac=1), 
                                         [int(.70*len(allData)), int(.85*len(allData))])
@@ -138,45 +138,25 @@ print(f'cf = {cf}')
 
 yTrain = trainData.loc[:,'labels']<cf
 
-allPD = []
-allLabels = []
-yHit = yTrain[yTrain.values==1]
-yNHit = yTrain[yTrain.values==0]
-hitC = yHit.shape[0]
-nhitC = yNHit.shape[0]
-print(f'hits in dataset: {hitC}, non-hits in dataset: {nhitC}')
-
-oversampleSize = np.min([nhitC, 50000, hitC*oss*8])
-print(f'sample size for oversampled dataset: {oversampleSize}')
-
-trainTuples = []
-for i in range(oversampleSize):
-    iPos = random.randint(0, hitC-1)
-    iNeg = random.randint(0, nhitC-1)
-    # 50-50 balanced
-    trainTuples.append((yHit.index[iPos], 1))
-    trainTuples.append((yNHit.index[iNeg], 0))
-
-random.shuffle(trainTuples)
-xValidL = validationData.index.tolist()
-yValid = (validationData.loc[:, 'labels']<cf).astype(int).to_numpy().tolist()
-xTestL = testData.index.tolist()
-yTest = (testData.loc[:, 'labels']<cf).astype(int).to_numpy().tolist()
-yHit = []
-yNHit = []
-
-trainL = pd.DataFrame(trainTuples)
-trainL.columns = ['zinc_id', 'labels']
+# Create trainL, validL, and testL without oversampling
+trainL = pd.DataFrame({'zinc_id': trainData.index, 'labels': yTrain})
 trainL.set_index('zinc_id', inplace=True)
 trainL = pd.merge(trainL, smileData, on='zinc_id')
-validL = (validationData.loc[:, 'labels']<cf).astype(int).reset_index()
-testL = (testData.loc[:, 'labels']<cf).astype(int).reset_index()
+
+validL = (validationData.loc[:, 'labels'] < cf).astype(int).reset_index()
 validL.columns = ['zinc_id', 'labels']
-testL.columns = ['zinc_id', 'labels']
 validL.set_index('zinc_id', inplace=True)
-testL.set_index('zinc_id', inplace=True)
 validL = pd.merge(validL, smileData, on='zinc_id')
+
+testL = (testData.loc[:, 'labels'] < cf).astype(int).reset_index()
+testL.columns = ['zinc_id', 'labels']
+testL.set_index('zinc_id', inplace=True)
 testL = pd.merge(testL, smileData, on='zinc_id')
+
+# Optionally, print counts of hits and non-hits in the dataset
+hitC = yTrain.sum()
+nhitC = len(yTrain) - hitC
+print(f'hits in dataset: {hitC}, non-hits in dataset: {nhitC}')
 
 xTrain = trainL.reset_index()[['zinc_id', 'smile']].values.tolist()
 yTrain = [l[0] for l in trainL.reset_index()[['labels']].values.tolist()]
@@ -185,23 +165,26 @@ yValid = [l[0] for l in validL.reset_index()[['labels']].values.tolist()]
 xTest = testL.reset_index()[['zinc_id', 'smile']].values.tolist()
 yTest = [l[0] for l in testL.reset_index()[['labels']].values.tolist()]
 
-print("xTRAIN:", xTrain)
-print("yTrain:", yTrain)
+print("XTRAIN:", xTrain[:5])
+print("YTRAIN:", yTrain[:5])
+print("XTEST:", xTest[:5])
+print("YTEST:", yTest[:5])
 
-hiddenfeats = [32] * 1  # no. of layers in ANN
-layers = [num_atom_features()] + hiddenfeats 
-fpl = fplCmd 
+
+hiddenfeats = [fplCmd] * 4  # conv layers, of same size as fingeprint (so can map activations to features)
+layers = [num_atom_features()] + hiddenfeats
 modelParams = {
-    "fpl": fpl,
+    "fpl": fplCmd,
     "conv": {
         "layers": layers
     },
     "ann": {
         "layers": layers,
-        "ba": [fpl, fpl // 4, 1],
+        "ba": [fplCmd, fplCmd // 4, 1],
         "dropout": df
     }
 }
+
 print(f'layers: {layers}, through-shape: {list(zip(layers[:-1], layers[1:]))}')
 
 # # load pickled data
@@ -253,7 +236,7 @@ model.load_state_dict(torch.load('../basisModel.pth'), strict=False)
 lendl = len(trainds)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 200  # 200 initially 
+epochs = 16  # 200 initially 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 trainLoss, validLoss = [], []
 for epoch in range(1, epochs + 1):
@@ -268,6 +251,7 @@ for epoch in range(1, epochs + 1):
 
         preds = model((at, bo, ed))
         loss = lossFn(preds, Y)
+        print(f"Y: {Y}, \n pred: {preds}")
 
         loss.backward()
         optimizer.step()
@@ -291,7 +275,7 @@ for epoch in range(1, epochs + 1):
     size = len(validdl.dataset)
     num_batches = len(validdl)
     model.eval()
-    valid_loss, correct = 0, 0
+    valid_loss, correct,  = 0, 0
     with torch.no_grad():
         for (a, b, e, (y, zidValid)) in validdl:
             preds = model((a, b, e))

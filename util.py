@@ -42,7 +42,6 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown'):
         for bond in molBonds:
             atom1Idx = idxMap[bond.GetBeginAtom().GetIdx()]
             atom2Idx = idxMap[bond.GetEndAtom().GetIdx()]
-            atom2Idx = idxMap[bond.GetEndAtom().GetIdx()]
             atom1Neighbor = len(connMat[atom1Idx])
             atom2Neighbor = len(connMat[atom2Idx])
 

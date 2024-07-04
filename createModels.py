@@ -6,11 +6,11 @@ from features import num_atom_features
 from torch import save
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-p', '--protein', required=True)
+parser.add_argument('-d', '--data', required=True)
 parser.add_argument('-fpl', '--fplength', required=True)
 
 ioargs = parser.parse_args()
-protein = ioargs.protein
+data = ioargs.data
 fplength = ioargs.fplength
 
 # dropout = [0.3, 0.5, 0.7]
@@ -19,7 +19,7 @@ fplength = ioargs.fplength
 # oss = [25]
 # bs = [64, 128, 256]
 
-dropout = [0.3]                # static, for testing
+dropout = [0.0]                # static, for testing
 learn_rate = [0.001]
 weight_decay = [0.0001]
 oss = [25]
@@ -67,13 +67,13 @@ for i in range(len(hps)):
         # f.write('source ../../tensorflow_gpu/bin/activate\n')
  
         o,batch,do,lr,wd = hps[i]
-        f.write('python '+'../../subgraph_train.py'+' '+'-dropout'+' '+str(do)+' '+'-learn_rate'+' '+str(lr)+' '+'-os'+' '+str(o)+' '+'-bs'+' '+str(batch)+' '+'-protein '+protein+' '+'-fplen '+fplength+' '+'-wd '+str(wd)+' '+'-mnum '+str(i+1)+'\n')
+        f.write('python '+'../../reg_train.py'+' '+'-dropout'+' '+str(do)+' '+'-learn_rate'+' '+str(lr)+' '+'-os'+' '+str(o)+' '+'-bs'+' '+str(batch)+' '+'-data '+data+' '+'-fplen '+fplength+' '+'-wd '+str(wd)+' '+'-mnum '+str(i+1)+'\n')
 
 
 # need to update when updating model params
 fpl = int(fplength) 
-hiddenfeats = [fpl] * 4
-layers = [num_atom_features()] + hiddenfeats 
+hiddenfeats = [fpl] * 4  # conv layers, of same size as fingeprint (so can map activations to features)
+layers = [num_atom_features()] + hiddenfeats
 modelParams = {
     "fpl": fpl,
     "conv": {
@@ -81,8 +81,8 @@ modelParams = {
     },
     "ann": {
         "layers": layers,
-        "ba": [fpl, 1],  # if not doing subgraphs, can be more -- [fpl, fpl // 4, fpl // 16, 1]
-        "dropout": 0.0 # arbitrary
+        "ba": [fpl, fpl // 4, 1],
+        "dropout": 0.0 #arbitrary
     }
 }
 model = dockingProtocol(modelParams)
