@@ -127,6 +127,9 @@ def labelsToDF(fname):
         
         for line in f.readlines():
             data = line.strip().split('\t')
+            first_col = data[0].split() # split indice into first element, if present
+            data = first_col + data[1:]
+            data[0].split() 
             data = [item for item in data if item.strip() != '']
             arr.append(data)
     
@@ -134,15 +137,25 @@ def labelsToDF(fname):
         df = pd.DataFrame(arr, columns=labels)
         df['labels'] = df['labels'].astype(float)
     else:
-        ## assumes it is a docking .txt file
+        # assumes it is a docking .txt file
         index_list = [arr[i][0][0] for i in range(10)]
         includes_ind = is_consecutive_list(index_list)
+
         if includes_ind:
-            for i in range(len(arr)):
-                arr[i][0] = float(arr[i][0].split()[1]) #strip indices
+            print(arr[:10])
+            df = pd.DataFrame(arr, columns=['index','labels','zinc_id'])
+            print('DF', df)
+            df = df.drop(columns=['index'])
+            print("DF-no-idx", df)
+        else:
+            df = pd.DataFrame(arr, columns=['labels','zinc_id'])
+        print("DF Labels:", df['labels'])
+        labels = df['labels']
         
-        df = pd.DataFrame(arr, columns=['labels','zinc_id'])
-    
+        mask = df['labels'].str.contains('ZINC') 
+        df = df[~mask] # remove incorrectly labelled data
+        df['labels'] = df['labels'].astype(float)
+
     return df
 
 def get_ID_type(DataFrame):

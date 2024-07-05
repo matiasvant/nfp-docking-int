@@ -235,9 +235,9 @@ best_feat, worst_feat = find_most_predictive_features(model, checkpoint['dataset
 first_fp = next(iter(fp_dict.values()))
 fp_len = first_fp.shape[0]
 
-best_subgraphs_dict = group_most_associated_w_fp_feature(best_feat['Feature #'],fp_len,degree_activations)
+worst_subgraphs_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations)
 
-for i, (ID, atomTuple) in enumerate(best_subgraphs_dict.items()):
+for i, (ID, atomTuple) in enumerate(worst_subgraphs_dict.items()):
     if 'ZINC' in ID: # get smiles from reference
         print(f"ZID:{ID}")
         smile = get_smile_from_zinc_id(ID, smileData)
@@ -256,8 +256,8 @@ for i, (ID, atomTuple) in enumerate(best_subgraphs_dict.items()):
     degree = atomTuple[0]
     atom_index = atomTuple[2]
     atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
-    if i==0 or i==1 or i==2:
-        print(f"Molecule {i}:", ID, "- best atoms:", atom_neighborhood)
+    if i % 3 == 0 and i < 35:
+        print(f"Molecule {i}:", ID, "- worst atoms:", atom_neighborhood)
         ID_name = ''.join(ID.split())
         draw_molecule_with_highlights(f"{ID_name}.png", smile, atom_neighborhood) # note both are RDKit ordering, indices align
 
