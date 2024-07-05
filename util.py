@@ -142,14 +142,10 @@ def labelsToDF(fname):
         includes_ind = is_consecutive_list(index_list)
 
         if includes_ind:
-            print(arr[:10])
             df = pd.DataFrame(arr, columns=['index','labels','zinc_id'])
-            print('DF', df)
             df = df.drop(columns=['index'])
-            print("DF-no-idx", df)
         else:
             df = pd.DataFrame(arr, columns=['labels','zinc_id'])
-        print("DF Labels:", df['labels'])
         labels = df['labels']
         
         mask = df['labels'].str.contains('ZINC') 

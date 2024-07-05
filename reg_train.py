@@ -17,7 +17,6 @@ from util import *
 import time
 from scipy.stats import linregress
 from sklearn.preprocessing import StandardScaler
-import pickle
 
 parser = argparse.ArgumentParser()
 
@@ -141,12 +140,13 @@ hiddenfeats = [fpl] * 4  # conv layers, of same size as fingeprint (so can map a
 layers = [num_atom_features()] + hiddenfeats
 modelParams = {
     "fpl": fpl,
+    "activation": 'regression',
     "conv": {
         "layers": layers
     },
     "ann": {
         "layers": layers,
-        "ba": [fpl, fpl // 4, 1],
+        "ba": [fplCmd, 1],
         "dropout": df
     }
 }
@@ -171,8 +171,9 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 20  # 200 initially 
+epochs = 2  # 200 initially 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
+converged_at = 0
 trainLoss, validLoss = [], []
 trainR, validR = [], []
 for epoch in range(1, epochs + 1):
@@ -196,7 +197,9 @@ for epoch in range(1, epochs + 1):
  
         preds = scaler.inverse_transform(scaled_preds.detach().cpu().numpy().reshape(-1, 1)).T[0].tolist()
         Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
-        print(f"P: {preds[:5]}, Y: {Y[:5]}")
+        
+        if batch == 0:
+            print(f"Pred: {preds[:5]} vs True: {Y[:5]}")
 
         _,_,r_value,_,_ = linregress(preds, Y)
         r_list.append(r_value ** 2)
@@ -239,19 +242,23 @@ for epoch in range(1, epochs + 1):
     
     if valid_loss < bestVLoss:
         bestVLoss = valid_loss
-        model_path = f'{data}_model.pth'
-        print(f"params, data, model_path: {modelParams, data, model_path}")
-        model.save(modelParams, data, model_path)
+        model_path = f'r_{data}_model.pth'
+        print(f"Saved current as new best.")
+        model.save(modelParams, data, model_path, scaler)
 
     if earlyStop.early_stop(valid_loss):
         print(f'validation loss converged to ~{valid_loss}')
+        converged_at = epoch
         break
 
 if cStop: 
     print(f'training loss converged erroneously')
     sys.exit(0)
 
-epochR = range(1, epochs + 1)
+if converged_at != 0:
+    epochR = range(1, converged_at + 1)
+else:
+    epochR = range(1, epoch + 1)
 plt.plot(epochR, trainLoss, label='Training Loss', linestyle='-', color='lightgreen')
 plt.plot(epochR, validLoss, label='Validation Loss', linestyle='-', color='darkgreen')
 plt.plot(epochR, trainR, label='Training R^2', linestyle='--', color='lightblue')
@@ -266,10 +273,10 @@ plt.legend(loc='best')
 plt.xticks(np.arange(0, epochs + 1, 2))
  
 plt.legend(loc='best')
-plt.savefig(f'./loss{mn}.png')
+plt.savefig(f'./r_loss{data}.png')
 plt.show()
 plt.close()
-with open(f'./lossData{mn}.txt', 'w+') as f:
+with open(f'./r_lossData{data}.txt', 'w+') as f:
     f.write('train loss, validation loss\n')
     f.write(f'{",".join([str(x) for x in trainLoss])}')
     f.write(f'{",".join([str(x) for x in validLoss])}')

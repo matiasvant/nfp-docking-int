@@ -19,9 +19,10 @@ from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem.Draw import DrawingOptions
 from scipy.stats import linregress
+from sklearn.preprocessing import StandardScaler
 
 
-def group_most_associated_w_fp_feature(fp_i, fp_size, degree_activations):
+def group_most_associated_w_fp_feature(fp_i, fp_size, degree_activations, model_data_scaler):
     """Produce a dict of {Molecule: group (atom-radii) that most activates a specific fingerprint feature}'s"""
     most_associated_activations = {}
 
@@ -210,6 +211,7 @@ model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/model_17.pth
 checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 model = dockingProtocol(params=checkpoint['params'])
 model.load_state_dict(checkpoint['model_state_dict'])
+scaler = checkpoint['scaler']
 
 fp_dict = {}
 degree_activations = {0: {}, 1: {}, 2: {}, 3: {}, 4: {}, 5: {}}
@@ -235,7 +237,7 @@ best_feat, worst_feat = find_most_predictive_features(model, checkpoint['dataset
 first_fp = next(iter(fp_dict.values()))
 fp_len = first_fp.shape[0]
 
-worst_subgraphs_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations)
+worst_subgraphs_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations,scaler)
 
 for i, (ID, atomTuple) in enumerate(worst_subgraphs_dict.items()):
     if 'ZINC' in ID: # get smiles from reference

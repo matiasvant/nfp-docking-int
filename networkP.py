@@ -192,12 +192,13 @@ class ActivationCapture(nn.Module):
         return x
 
 class dockingANN(nn.Module):
-    def __init__(self, fpl, ba, layers, dropout):
+    def __init__(self, fpl, ba, layers, dropout, activation='regression'):
         super(dockingANN, self).__init__()
         self.inputSize = fpl
         self.ba = ba
         self.arch = list(zip(ba[:-1], ba[1:]))
         self.layers = layers
+        self.activation = activation
         self.dropout = dropout
 
         self.ann = nn.Sequential()
@@ -209,27 +210,31 @@ class dockingANN(nn.Module):
         for j, (i, o) in enumerate(self.arch):
             if j == 0:
                 self.ann.add_module(f'fingerprint_capture', ActivationCapture())
-            self.ann.add_module(f'linear {j}', nn.Linear(i, o))
             # b = 0.01 if j != len(self.arch) - 1 else np.log([self.pos/self.neg])[0]
-            self.ann[-1].bias = torch.nn.init.constant_(torch.nn.Parameter(torch.empty(o, device=device)), 0.01)
             self.ann.add_module(f'relu act {j}', nn.ReLU())
-            self.ann.add_module(f'batch norm {j}', nn.BatchNorm1d(o))
+            self.ann.add_module(f'batch norm {j}', nn.BatchNorm1d(i))
             self.ann.add_module(f'dropout {j}', nn.Dropout(self.dropout))
-        self.ann.add_module(f'output', nn.Sigmoid()) # classification
-        # self.ann.add_module(f'output', nn.Linear(self.arch[-1][1], 1)) # for regression
-        # self.ann.add_module(f'output', nn.Tanh()) # regression alt. func
+            self.ann.add_module(f'linear {j}', nn.Linear(i, o))
+            self.ann[-1].bias = torch.nn.init.constant_(torch.nn.Parameter(torch.empty(o, device=device)), 0.01)
+
+        if self.activation == 'classification': 
+            self.ann.add_module(f'output', nn.Sigmoid())
 
     def forward(self, input, return_fp=False):
-        # input = torch.tensor(input, device=device)
-        output_from_sequential = self.ann(input)
-        activations=None
-        for module in self.ann.children(): # return first layer FP
+        print(f"Input shape: {input[:3]}")
+        activations = None
+        
+        for name, module in self.ann.named_children():
+            input = module(input)
+            print(f"Layer {name}: {input[:3]}")
+            
             if isinstance(module, ActivationCapture) and return_fp:
                 activations = module.activations
-
+        
         if activations is not None: 
-            return output_from_sequential, activations
-        return output_from_sequential
+            return input, activations
+        
+        return input
 
     
 class dockingProtocol(nn.Module):
@@ -238,13 +243,14 @@ class dockingProtocol(nn.Module):
         self.model = nn.Sequential(
             nfpDocking(
                 layers=params["conv"]["layers"],
-                fpl=params["fpl"]
+                fpl=params["fpl"],
             ),
             dockingANN(
                 fpl=params["fpl"],
                 ba=params["ann"]["ba"],
                 dropout=params["ann"]["dropout"],
-                layers=params["ann"]["layers"]
+                layers=params["ann"]["layers"],
+                activation=params["activation"]
             )
         )
         self.to(device)
@@ -264,9 +270,10 @@ class dockingProtocol(nn.Module):
             fp_input = self.model[0](input)
             return torch.squeeze(self.model[1](fp_input))
     
-    def save(self, params, dataset, outpath):
+    def save(self, params, dataset, outpath, scaler=None):
         torch.save({
             'model_state_dict': self.state_dict(),
             'params': params,
-            'dataset': dataset
+            'dataset': dataset,
+            'scaler': scaler
         }, outpath)

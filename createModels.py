@@ -54,10 +54,10 @@ with open('./src/hpResults.csv', 'w+') as f:
     f.write(f'model number,oversampled size,batch size,learning rate,dropout rate,gfe threshold,fingerprint length,validation auc,validation prauc,validation precision,validation recall,validation f1,validation hits,test auc,test prauc,test precision,test recall,test f1,test hits\n')
     
 
-for f in os.listdir('./src/trainingJobs/'):
-    os.remove(os.path.join('./src/trainingJobs', f))
-for f in os.listdir('./src/logs/'):
-    os.remove(os.path.join('./src/logs', f))
+# for f in os.listdir('./src/trainingJobs/'):
+#     os.remove(os.path.join('./src/trainingJobs', f))
+# for f in os.listdir('./src/logs/'):
+#     os.remove(os.path.join('./src/logs', f))
     
 for i in range(len(hps)):
     with open(f'./src/trainingJobs/train{i + 1}.sh', 'w') as f:
@@ -76,12 +76,13 @@ hiddenfeats = [fpl] * 4  # conv layers, of same size as fingeprint (so can map a
 layers = [num_atom_features()] + hiddenfeats
 modelParams = {
     "fpl": fpl,
+    "activation": 'regression',
     "conv": {
         "layers": layers
     },
     "ann": {
         "layers": layers,
-        "ba": [fpl, fpl // 4, 1],
+        "ba": [fpl, 1],
         "dropout": 0.0 #arbitrary
     }
 }
