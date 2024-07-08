@@ -180,7 +180,7 @@ modelParams = {
     },
     "ann": {
         "layers": layers,
-        "ba": [fplCmd, fplCmd // 4, 1],
+        "ba": [fplCmd, 1],
         "dropout": df
     }
 }
@@ -236,10 +236,11 @@ model.load_state_dict(torch.load('../basisModel.pth'), strict=False)
 lendl = len(trainds)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 40  # 200 initially 
+epochs = 20  # 200 initially 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss = [], []
+
 for epoch in range(1, epochs + 1):
     print(f'\nEpoch {epoch}\n------------------------------------------------')
     
@@ -252,7 +253,6 @@ for epoch in range(1, epochs + 1):
 
         preds = model((at, bo, ed))
         loss = lossFn(preds, Y)
-        print(f"Y: {Y}, \n pred: {preds}")
 
         loss.backward()
         optimizer.step()
@@ -260,6 +260,9 @@ for epoch in range(1, epochs + 1):
 
         corr += (preds.round() == Y).type(torch.float).sum().item()
         runningLoss += preds.shape[0] * loss.item()
+
+        if batch == 0:
+            print(f"Pred: {preds[:3]} vs True: {Y[:3]}")
 
         cStop = earlyStop.early_cstop(loss.item())
         if cStop: break
@@ -287,10 +290,12 @@ for epoch in range(1, epochs + 1):
     validLoss.append(valid_loss)
     print(f'\nValidation Results:\nacc: {(100*correct):>0.1f}%, loss: {valid_loss:>8f}\n------------------------------------------------')
     
-    # if valid_loss < bestVLoss:
-    #     bestVLoss = valid_loss
-    #     model_path = f'model_{epoch}'
-    #     torch.save(model.state_dict(), model_path)
+    if valid_loss < bestVLoss:
+        bestVLoss = valid_loss
+        model_path = f'c_{data}_model.pth'
+        print(f"Saved current as new best.")
+        model.save(modelParams, data, model_path)
+
 
     if earlyStop.early_stop(valid_loss):
         converged_at = epoch

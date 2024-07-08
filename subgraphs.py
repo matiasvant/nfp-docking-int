@@ -82,9 +82,9 @@ def get_atom_neighborhood(smile, center_atom_i, max_degree):
     return atom_neighborhood
 
 
-def draw_molecule_with_highlights(filename, smiles, highlight_atoms):
+def draw_molecule_with_highlights(filename, smiles, highlight_atoms, color=(60.0/255.0, 80.0/255.0, 10.0/255.0) ):
     figsize = (300, 300)
-    highlight_color = (40.0/255.0, 200.0/255.0, 80.0/255.0) 
+    highlight_color = color
 
     drawoptions = DrawingOptions()
     drawoptions.selectColor = highlight_color
@@ -207,7 +207,7 @@ dataset = setup_dataset(input_data=input, name="Get conv. activations", referenc
 dataloader = DataLoader(dataset, batch_size=12, shuffle=False)
 
 # import model
-model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/model_17.pth"
+model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/r_sol_data_ESOL_model.pth"
 checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 model = dockingProtocol(params=checkpoint['params'])
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -237,9 +237,12 @@ best_feat, worst_feat = find_most_predictive_features(model, checkpoint['dataset
 first_fp = next(iter(fp_dict.values()))
 fp_len = first_fp.shape[0]
 
-worst_subgraphs_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations,scaler)
+best_dict = group_most_associated_w_fp_feature(best_feat['Feature #'],fp_len,degree_activations,scaler)
+worst_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations,scaler)
 
-for i, (ID, atomTuple) in enumerate(worst_subgraphs_dict.items()):
+subgraph_dict = best_dict
+
+for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
     if 'ZINC' in ID: # get smiles from reference
         print(f"ZID:{ID}")
         smile = get_smile_from_zinc_id(ID, smileData)
@@ -258,10 +261,16 @@ for i, (ID, atomTuple) in enumerate(worst_subgraphs_dict.items()):
     degree = atomTuple[0]
     atom_index = atomTuple[2]
     atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
-    if i % 3 == 0 and i < 35:
+    if i % 4 == 0 and i < 35:
         print(f"Molecule {i}:", ID, "- worst atoms:", atom_neighborhood)
         ID_name = ''.join(ID.split())
-        draw_molecule_with_highlights(f"{ID_name}.png", smile, atom_neighborhood) # note both are RDKit ordering, indices align
+
+        if subgraph_dict == best_dict:
+            color = (40.0/255.0, 200.0/255.0, 80.0/255.0)
+        if subgraph_dict == worst_dict:
+            color = (40.0/255.0, 80.0/255.0, 200.0/255.0)
+
+        draw_molecule_with_highlights(f"{ID_name}.png", smile, atom_neighborhood,color) # note both are RDKit ordering, indices align
 
 
 

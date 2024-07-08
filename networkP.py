@@ -221,16 +221,13 @@ class dockingANN(nn.Module):
             self.ann.add_module(f'output', nn.Sigmoid())
 
     def forward(self, input, return_fp=False):
-        print(f"Input shape: {input[:3]}")
         activations = None
         
         for name, module in self.ann.named_children():
             input = module(input)
-            print(f"Layer {name}: {input[:3]}")
-            
             if isinstance(module, ActivationCapture) and return_fp:
                 activations = module.activations
-        
+
         if activations is not None: 
             return input, activations
         

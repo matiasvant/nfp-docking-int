@@ -171,7 +171,7 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 2  # 200 initially 
+epochs = 100  # 200 initially 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss = [], []
@@ -199,7 +199,7 @@ for epoch in range(1, epochs + 1):
         Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
         
         if batch == 0:
-            print(f"Pred: {preds[:5]} vs True: {Y[:5]}")
+            print(f"Pred: {preds[:3]} vs True: {Y[:3]}")
 
         _,_,r_value,_,_ = linregress(preds, Y)
         r_list.append(r_value ** 2)
@@ -238,7 +238,7 @@ for epoch in range(1, epochs + 1):
         r_squared = sum(r_list)/len(r_list)
     validLoss.append(valid_loss)
     validR.append(r_squared)
-    print(f'\nValidation Results:\nLoss: {valid_loss:>8f}, R^2: {r_squared:>0.1f}%\n------------------------------------------------')
+    print(f'\nValidation Results:\nLoss: {valid_loss:>4f}, R^2: {r_squared:>2f}%\n------------------------------------------------')
     
     if valid_loss < bestVLoss:
         bestVLoss = valid_loss
