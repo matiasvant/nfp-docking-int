@@ -140,97 +140,103 @@ validds = dockingDataset(train=xValid,
 validdl = DataLoader(validds, batch_size=bs, shuffle=True)
 
 
+
 model = GCN_Autoreg(params).to(device)
+
+def remove_edges_above_node_idx(idx,a,b,e):
+    # find connections to atoms beyond current specified node/subgraph
+    threshold_val = idx
+    replace_value = -1
+    mask = e > threshold_val
+    indices = torch.nonzero(mask, as_tuple=False)
+
+    # remove the connections from edges; scrub bond features
+    none_bond_features = T.tensor([1,0,0,0], dtype=torch.float)
+    mol_idxs = indices[:, 0]
+    atom_idxs = indices[:, 1]
+    bond_idxs = indices[:, 2]
+
+    # print(f"--Up to {i}th atom--")
+    # print(f"Before", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :]) # picks a molecule, shows u its before n after
+    # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:])
+    b[mol_idxs, atom_idxs, bond_idxs,:] = none_bond_features
+    e[mask] = replace_value
+    # print("After:", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :])
+    # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:]) 
+    # print("new e:", sbgr_e)
+
+    return a,b,e
+
+def replace_elems_w_row_indices(matrix):
+    """Replaces elems. w row-wise indices; except for -1 which it leaves untouched"""
+    mask = matrix != -1
+    row_indices = np.tile(np.arange(matrix.shape[1]), (matrix.shape[0], 1))
+    result = np.where(mask, row_indices, -1)
+    return result
+
 
 for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
     if batch>=1:
         break
 
     n_atoms = a.size(1)
-    print("n atoms:", n_atoms)
     # loop over n+1 sized subgraphs, predicting next atom & bonds
     # for i in range(n_atoms): # consider 'up-to-atom-i' subgraph for all molecules at each step
-    for i in range(8,9):
-        if i>=20: break
-        sbgr_a = a[:,:i+1,:]
-        sbgr_b = b[:,:i+1,:,:]
-        sbgr_e = e[:,:i+1,:]
-        print(f"atom: {sbgr_a.shape}")
-        print(f"bonds: {sbgr_b.shape}")
-        print(f"e: {sbgr_e.shape},")
+    for i in range(9,10):
+        # if i>=20: break
 
-        # find connections to atoms beyond current subgraph
-        threshold_val = i
-        replace_value = -1
-        mask = sbgr_e > threshold_val
-        indices = torch.nonzero(mask, as_tuple=False)
+        ## Get the edge labels of node i+1, 'node to predict', end of current subgraph
+        sbgr_a_i_plus_1 = a[:,:i+2,:]
+        sbgr_b_i_plus_1 = b[:,:i+2,:,:]
+        sbgr_e_i_plus_1 = e[:,:i+2,:]
+        print(f"atom: {sbgr_a_i_plus_1.shape}")
+        print(f"bonds: {sbgr_b_i_plus_1.shape}")
+        print(f"e: {sbgr_e_i_plus_1.shape},")
 
-        # remove the connections from edges; scrub bond features
-        none_bond_features = T.tensor([1,0,0,0], dtype=torch.float)
-        mol_idxs = indices[:, 0]
-        atom_idxs = indices[:, 1]
-        bond_idxs = indices[:, 2]
+        # nodes/connections beyond curr subgraph don't exist
+        sbgr_a_i_plus_1, sbgr_b_i_plus_1, sbgr_e_i_plus_1 = remove_edges_above_node_idx(i+1, sbgr_a_i_plus_1,sbgr_b_i_plus_1,sbgr_e_i_plus_1)
 
-        # print(f"--Up to {i}th atom--")
-        # print(f"Before", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :]) # picks a molecule, shows u its before n after
-        # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:])
-        sbgr_b[mol_idxs, atom_idxs, bond_idxs,:] = none_bond_features
-        sbgr_e[mask] = replace_value
-        # print("After:", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :])
-        # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:]) 
-        # print("new e:", sbgr_e)
+        next_atom_edges = sbgr_e_i_plus_1[:,i+1,:] 
+        print("NEXT ATOM EDGES:", next_atom_edges.shape)
+        next_atom_bonds = sbgr_b_i_plus_1[:,i+1,:,:]
+        print("NEXT ATOM BONDS:", next_atom_bonds.shape)
 
-        next_atom_feats = a[:,i+1,:]
-            # run pred node here
+        e_placeholder_col = np.full((next_atom_edges.shape[0], 1), -1)
+        next_atom_edges = np.hstack((next_atom_edges, e_placeholder_col)) # add placeholder bond because '-1' reads as 'last col idx' -- this absorbs all the 'rewrite idx -1' which are otherwise impossible to get rid of; note that since it's being read as an idx all those empty values have to write to somewhere
+        
+        b_placeholder_col = np.full((next_atom_bonds.shape[0], 1, next_atom_bonds.shape[2]), -99)
+        next_atom_bonds = np.concatenate([next_atom_bonds, b_placeholder_col], axis=1)
 
-        # need to use a/e actuals to PRED node i+1 true bonds connecting to current subgraph
-
-        next_atom_edges = e[:,i+1,:] 
-            # need to clean this, get rid of edges/bond feats above curr atom # 
-        next_atom_bonds = b[:,i+1,:,:]
-
-        placeholder_col = np.full((next_atom_edges.shape[0], 1), -1)
-        next_atom_edges = np.hstack((next_atom_edges, placeholder_col)) # add placeholder col. because '-1' reads as 'last col idx' -- this absorbs all the 'rewrite idx -1' which are otherwise impossible to get rid of; note that since it's being read as an idx all those empty values have to write to somewhere
+        eb_concat = np.concatenate([next_atom_edges[:, :, np.newaxis], next_atom_bonds], axis=2)
+        print(f"eb concat: {eb_concat.shape}")
 
         num_molecules = next_atom_edges.shape[0]
-        num_atoms = i+1
-        num_b_feats = b.shape[2]
-
-        # Create bond matrix using tensor operations
-        bond_matrix = np.zeros((num_molecules, num_atoms, num_b_feats))
+        num_atoms = i+2
+        num_b_feats = b.shape[3]
+        
+        idx_lay = np.full((eb_concat.shape[0], num_atoms, 1), -3)
+        bf_lays = np.zeros((eb_concat.shape[0], num_atoms,eb_concat.shape[2]-1))
+        bond_matrix = np.concatenate([idx_lay, bf_lays], axis=2) # empty matrix to store rearranged bfs
 
         rows = np.arange(num_molecules)[:, np.newaxis]
         columns = next_atom_edges
-        bond_matrix[rows, columns] = next_atom_bonds[rows, next_atom_edges]
-        bond_matrix = bond_matrix[:, :-1] # remove placeholder row
+        bond_matrix[rows, columns] = eb_concat # rearrange s.t. bond feat vecs line up with idxs of destination atoms
 
-        f = 0
-        print(f"Molecule {f} - bond_matrix[{rows[f]}, {columns[f]}]")
-        print("EDGE MATRIX:\n", next_atom_edges[:5,:5])
-        print("NEW BOND MATRIX:\n", bond_matrix[:5,:10])
+        bond_matrix = bond_matrix[:, :-1,:] # remove placeholder row
+        no_bond_mask = (bond_matrix[:,:,0] == -3)
+        no_bond_feat_layer = bond_matrix[:,:,1]
+        no_bond_feat_layer[no_bond_mask] = 1 # set everything that doesn't have a feature vector to 'no bond'
 
-        curr_atoms_bonds = b[:,i,:,:]
+        # print("Edge Matrix:\n", eb_concat[:12,:,0])
+        # print("Bond matrix lay 0:\n", bond_matrix[:12,:,0])
+        # print("Bond matrix lay 1:\n", bond_matrix[:12,:,1])
+        # print("Bond matrix lay 2:\n", bond_matrix[:12,:,2])
+        # print("Bond matrix lay 3:\n", bond_matrix[:12,:,3])
+        # print("Bond matrix lay 4:\n", bond_matrix[:12,:,4])
 
+        bond_matrix = bond_matrix[:,:,1:] # remove 'vector idx layer', leaving only bond feats
 
-        # for dest_atom in range(i+1): # check each possible destination atom
-
-
-
-        #     # true_feats = np.zeros(subgr_b.size(0), subgr_b.size(3)) # mols x bond feats
-        #     # true_feats[:,0] = 1 # all bonds to 'none' by default 
-            
-        #     sbgr_e[:,]
-        #     dest_atom_feats = sbgr_
-
-        # ordered_edge_feats = np.zeros(sbgr_a.size(0),i)
-
-            
-
-
-        next_bond = b[:,:i+1,:,:]
-
-
-
+        # Final Output: [mols x destination atoms x bond feats]. If there's no bond, then the bond feats will reflect that
     
 
 
