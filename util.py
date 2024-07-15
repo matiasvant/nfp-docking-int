@@ -15,16 +15,22 @@ def padDim(arr, size, dim, val=0, padR=True):
     padded[dim] = (0, size - arr.shape[dim]) if padR else (size - arr.shape[dim], 0)
     return np.pad(arr, pad_width=padded, mode='constant', constant_values=val)
 
-def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown'):
+def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False):
     n = len(smiles)
-    nAF = num_atom_features()
-    nBF = num_bond_features()
+    nAF = num_atom_features(just_structure=just_structure)
+    nBF = num_bond_features(just_structure=just_structure)
+    print("Num atom feats:", nAF, "# bfs:", nBF)
     atoms = np.zeros((n, maxAtom, nAF))
     bonds = np.zeros((n, maxAtom, maxDeg, nBF))
+    if just_structure:
+      bonds[:,:,:,0] = 1 # set 'no bond' feat to true by default
+
     edges = -np.ones((n, maxAtom, maxDeg), dtype=int)
 
     for molIdx, smile in enumerate(smiles):
         molecule = Chem.MolFromSmiles(smile)
+        if just_structure:
+            Chem.Kekulize(molecule) # convert aromatic bonds to single/double pairs
         molAtoms = molecule.GetAtoms()
         molBonds = molecule.GetBonds()
         idxMap = {}
@@ -36,7 +42,7 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown'):
             edges = padDim(edges, len(molAtoms), axis=1, val=-1)
         
         for atomIdx, atom in enumerate(molAtoms):
-            atoms[molIdx, atomIdx, : nAF] = getAtomFeatures(atom)
+            atoms[molIdx, atomIdx, : nAF] = getAtomFeatures(atom, just_structure=just_structure)
             idxMap[atom.GetIdx()] = atomIdx
 
         for bond in molBonds:
@@ -49,7 +55,7 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown'):
                 bonds = padDim(bonds, max(atom1Neighbor, atom2Neighbor) + 1, axis=2)
                 edges = padDim(edges, max(atom1Neighbor, atom2Neighbor) + 1, axis=2, val=-1)
             
-            bondFeat = np.array(getBondFeatures(bond), dtype=int)
+            bondFeat = np.array(getBondFeatures(bond, just_structure=just_structure))
             bonds[molIdx, atom1Idx, atom1Neighbor, :] = bondFeat
             bonds[molIdx, atom2Idx, atom2Neighbor, :] = bondFeat
 
@@ -80,14 +86,14 @@ def find_item_with_keywords(search_dir, keywords: List[str], dir=False, file=Fal
 class dockingDataset(Dataset):
     def __init__(self, train, labels, 
     maxa=70, maxd=6, # 6 bond hard cap; 70 atom soft limit
-    name='unknown'):
+    name='unknown', just_structure=False):
         # self.train = (zid, smile), self.label = (bin label)
         self.train = train
         self.labels = T.from_numpy(np.array(labels)).float()
         self.maxA = maxa
         self.maxD = maxd
         smiles = [x[1] for x in self.train]
-        self.a, self.b, self.e = buildFeats(smiles, self.maxD, self.maxA, name)
+        self.a, self.b, self.e = buildFeats(smiles, self.maxD, self.maxA, name, just_structure)
         self.zinc_ids = [x[0] for x in self.train]
         self.smiles = [x[1] for x in self.train]
 

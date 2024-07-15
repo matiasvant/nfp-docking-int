@@ -242,6 +242,13 @@ worst_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,d
 
 subgraph_dict = best_dict
 
+import os
+
+directory = '/data/users/vantilme1803/deva/neural-fingerprint-master/examples'
+file_list = os.listdir(directory)
+png_files = [file for file in file_list if file.lower().endswith('.png')]
+smile_list = [os.path.splitext(file)[0].split('_', 1)[0] for file in png_files]
+
 for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
     if 'ZINC' in ID: # get smiles from reference
         print(f"ZID:{ID}")
@@ -261,8 +268,9 @@ for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
     degree = atomTuple[0]
     atom_index = atomTuple[2]
     atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
-    if i % 4 == 0 and i < 35:
-        print(f"Molecule {i}:", ID, "- worst atoms:", atom_neighborhood)
+
+    if len(smile) > 8:
+        print(f"Molecule {i}:", smile, "- worst atoms:", atom_neighborhood)
         ID_name = ''.join(ID.split())
 
         if subgraph_dict == best_dict:
@@ -270,7 +278,7 @@ for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
         if subgraph_dict == worst_dict:
             color = (40.0/255.0, 80.0/255.0, 200.0/255.0)
 
-        draw_molecule_with_highlights(f"{ID_name}.png", smile, atom_neighborhood,color) # note both are RDKit ordering, indices align
+        draw_molecule_with_highlights(f"{smile}.png", smile, atom_neighborhood,color) # note both are RDKit ordering, indices align
 
 
 

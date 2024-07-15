@@ -20,7 +20,7 @@ device = (
 )
 
 print(f"Using {device} device")
-print(f'num interop threads: {torch.get_num_interop_threads()}, num intraop threads: {torch.get_num_threads()}') 
+# print(f'num interop threads: {torch.get_num_interop_threads()}, num intraop threads: {torch.get_num_threads()}') 
 
 class GraphLookup(nn.Module):
     def __init__(self):
@@ -28,12 +28,14 @@ class GraphLookup(nn.Module):
         self.to(device)
 
     def temporal_padding(self, x, paddings=(1, 0), pad_value=0):
+        print(f"X: {x.shape}, {x}")
         if not isinstance(paddings, (tuple, list, np.ndarray)):
             paddings = (paddings, paddings)
         output = torch.zeros(x.size(0), x.size(1) + sum(paddings), x.size(2), device=device)
         output[:, :paddings[0], :] = pad_value
         output[:, paddings[1]:, :] = pad_value
         output[:, paddings[0]: paddings[0]+x.size(1), :] = x
+        print(f"Output: {output.shape}, {output}")
         return output
     
     def lookup_neighbors(self, atoms, edges, maskvalue=0, include_self=False):
@@ -56,7 +58,8 @@ class GraphLookup(nn.Module):
         return self.lookup_neighbors(atoms, edges, maskvalue, include_self)
 
 class nfpConv(nn.Module):
-    def __init__(self, ishape, oshape):
+    """Convolve over neighbors, sum"""
+    def __init__(self, ishape, oshape, just_structure=False):
         super(nfpConv, self).__init__()
         self.ishape = ishape
         self.oshape = oshape
@@ -64,20 +67,11 @@ class nfpConv(nn.Module):
         self.w = nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape, self.oshape))), requires_grad=True).to(device)
         self.b = nn.Parameter(torch.nn.init.constant_(torch.empty((1, self.oshape)), 0.01), requires_grad=True).to(device)
 
-        # self.w = torch.nn.init.xavier_normal_(self.w)
-        # self.b = torch.nn.init.constant_(self.b, 0.01)
-        
-        self.degArr = nn.ParameterList([nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape + 6, self.oshape))), requires_grad=True).to(device) for _ in range(6)])
-       
+        # print(f"nfp-conv see this many bond feats - {num_bond_features(just_structure)}")
+        self.degArr = nn.ParameterList([nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape + num_bond_features(just_structure), self.oshape))), requires_grad=True).to(device) for _ in range(6)])
         self.graphLookup = GraphLookup()  
         self.to(device)
 
-    # def initDegreeWeights(self):
-    #     for _ in range(6):
-    #         dw = torch.empty((self.ishape + num_bond_features(), self.oshape), device=device)
-    #         dw = nn.Parameter(dw)
-    #         dw = nn.init.xavier_normal_(dw)
-    #         self.degArr.append(dw)
 
     def forward(self, input, return_conv_activs=False):
         atoms, bonds, edges = input
@@ -104,6 +98,7 @@ class nfpConv(nn.Module):
 
 
 class nfpOutput(nn.Module):
+    """Apply learned weight to conv. outputs"""
     def __init__(self, layer, fpl):
         super(nfpOutput, self).__init__()
         self.fpl = fpl
@@ -131,6 +126,7 @@ class nfpOutput(nn.Module):
         return fingerprint_out_masked.sum(dim=-2)
     
 class GraphPool(nn.Module):
+    """apply max pooling to aggregate neighbor feats"""
     def __init__(self):
         super(GraphPool, self).__init__()
         self.graphLookup = GraphLookup()
@@ -173,6 +169,8 @@ class nfpDocking(nn.Module):
         for i in range(lay_count):
             if return_conv_activs and i == lay_count-1: # if last store activations
                 activations, a = self.layersArr[i]((a, b, e), return_conv_activs=True)
+                print("Activations:",activations)
+                print("\nA:",a)
             else:
                 a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
             a = self.pool(a, e)

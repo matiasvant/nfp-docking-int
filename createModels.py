@@ -67,7 +67,7 @@ for i in range(len(hps)):
         # f.write('source ../../tensorflow_gpu/bin/activate\n')
  
         o,batch,do,lr,wd = hps[i]
-        f.write('python '+'../../reg_train.py'+' '+'-dropout'+' '+str(do)+' '+'-learn_rate'+' '+str(lr)+' '+'-os'+' '+str(o)+' '+'-bs'+' '+str(batch)+' '+'-data '+data+' '+'-fplen '+fplength+' '+'-wd '+str(wd)+' '+'-mnum '+str(i+1)+'\n')
+        f.write('python '+'../../train_reg.py'+' '+'-dropout'+' '+str(do)+' '+'-learn_rate'+' '+str(lr)+' '+'-os'+' '+str(o)+' '+'-bs'+' '+str(batch)+' '+'-data '+data+' '+'-fplen '+fplength+' '+'-wd '+str(wd)+' '+'-mnum '+str(i+1)+'\n')
 
 
 # need to update when updating model params
