@@ -16,6 +16,7 @@ from networkP_autoreg import GCN_Autoreg
 from util import *
 import time
 from scipy.stats import linregress
+from scipy import stats
 from sklearn.preprocessing import StandardScaler
 
 parser = argparse.ArgumentParser()
@@ -174,36 +175,63 @@ def replace_elems_w_row_indices(matrix):
     result = np.where(mask, row_indices, -1)
     return result
 
+def NLL_loss(true, mean, var):
+    var = T.maximum(var, T.tensor(0.1))  # min var for numerical stability
+    err = true - mean
+    standardized_error = err / var
+
+    # Standard gauss err -> the pdf density per input err (as standard gaussian)
+    inner = T.exp((-T.square(standardized_error) / 2))
+    constant = 1 / T.sqrt(torch.tensor(2 * torch.pi))
+    pdf_value = constant * inner
+    pdf_value = T.maximum(pdf_value, T.tensor(1e-10))  # numerical stability
+    # ref_pdf_value = stats.norm.pdf(standardized_error) # official implementation; would require detaching gradient so not used
+
+    prod = T.sum(pdf_value)
+    err_term = -T.log(prod)
+
+    one_over_a = T.ones_like(var) / var
+    oa_prod = T.sum(one_over_a)
+    var_term = -T.log(oa_prod)
+
+    # print(f"Err: {err}")
+    # print(f"1 / Var: {1 / var}")
+    # print(f"Standardized err: {standardized_error}")
+    # print(f"Pdf Values: {pdf_value}")
+    # print(f"Prod: {prod}")
+    # print("Err term:", err_term.item(), "Var term:", var_term.item())
+
+    loss = err_term + var_term
+    return loss
+
 
 for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
     if batch>=1:
         break
 
+    total_loss_per_molecule = 0
     n_atoms = a.size(1)
     # loop over n+1 sized subgraphs, predicting next atom & bonds
-    # for i in range(n_atoms): # consider 'up-to-atom-i' subgraph for all molecules at each step
-    for i in range(9,10):
+    for i in range(n_atoms): # consider 'up-to-atom-i' subgraph for all molecules at each step
         # if i>=20: break
 
-        ## Get the edge labels of node i+1, 'node to predict', end of current subgraph
+        print(f"NODE TO PREDICT(i+1) {i+1}, CURR NODE: {i}")
+        ## For every molecule, get the node labels of i+1, the 'node to predict'
+        atom_labels = a[:,i+1,:]
+
+        ## Get every molecules edge labels of node i+1 *to within current subgraph* (do not include edges to i+2,...)
         sbgr_a_i_plus_1 = a[:,:i+2,:]
         sbgr_b_i_plus_1 = b[:,:i+2,:,:]
         sbgr_e_i_plus_1 = e[:,:i+2,:]
-        print(f"atom: {sbgr_a_i_plus_1.shape}")
-        print(f"bonds: {sbgr_b_i_plus_1.shape}")
-        print(f"e: {sbgr_e_i_plus_1.shape},")
 
         # nodes/connections beyond curr subgraph don't exist
         sbgr_a_i_plus_1, sbgr_b_i_plus_1, sbgr_e_i_plus_1 = remove_edges_above_node_idx(i+1, sbgr_a_i_plus_1,sbgr_b_i_plus_1,sbgr_e_i_plus_1)
 
         next_atom_edges = sbgr_e_i_plus_1[:,i+1,:] 
-        print("NEXT ATOM EDGES:", next_atom_edges.shape)
         next_atom_bonds = sbgr_b_i_plus_1[:,i+1,:,:]
-        print("NEXT ATOM BONDS:", next_atom_bonds.shape)
 
         e_placeholder_col = np.full((next_atom_edges.shape[0], 1), -1)
         next_atom_edges = np.hstack((next_atom_edges, e_placeholder_col)) # add placeholder bond because '-1' reads as 'last col idx' -- this absorbs all the 'rewrite idx -1' which are otherwise impossible to get rid of; note that since it's being read as an idx all those empty values have to write to somewhere
-        
         b_placeholder_col = np.full((next_atom_bonds.shape[0], 1, next_atom_bonds.shape[2]), -99)
         next_atom_bonds = np.concatenate([next_atom_bonds, b_placeholder_col], axis=1)
 
@@ -216,28 +244,68 @@ for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
         
         idx_lay = np.full((eb_concat.shape[0], num_atoms, 1), -3)
         bf_lays = np.zeros((eb_concat.shape[0], num_atoms,eb_concat.shape[2]-1))
-        bond_matrix = np.concatenate([idx_lay, bf_lays], axis=2) # empty matrix to store rearranged bfs
+        bond_labels = np.concatenate([idx_lay, bf_lays], axis=2) # empty matrix to store rearranged bfs
 
         rows = np.arange(num_molecules)[:, np.newaxis]
         columns = next_atom_edges
-        bond_matrix[rows, columns] = eb_concat # rearrange s.t. bond feat vecs line up with idxs of destination atoms
+        bond_labels[rows, columns] = eb_concat # rearrange s.t. bond feat vecs line up with idxs of destination atoms
 
-        bond_matrix = bond_matrix[:, :-1,:] # remove placeholder row
-        no_bond_mask = (bond_matrix[:,:,0] == -3)
-        no_bond_feat_layer = bond_matrix[:,:,1]
+        bond_labels = bond_labels[:, :-1,:] # remove placeholder row
+        no_bond_mask = (bond_labels[:,:,0] == -3)
+        no_bond_feat_layer = bond_labels[:,:,1]
         no_bond_feat_layer[no_bond_mask] = 1 # set everything that doesn't have a feature vector to 'no bond'
 
         # print("Edge Matrix:\n", eb_concat[:12,:,0])
-        # print("Bond matrix lay 0:\n", bond_matrix[:12,:,0])
-        # print("Bond matrix lay 1:\n", bond_matrix[:12,:,1])
-        # print("Bond matrix lay 2:\n", bond_matrix[:12,:,2])
-        # print("Bond matrix lay 3:\n", bond_matrix[:12,:,3])
-        # print("Bond matrix lay 4:\n", bond_matrix[:12,:,4])
+        # print("Bond matrix lay 0:\n", bond_labels[:12,:,0])
+        # print("Bond matrix lay 1:\n", bond_labels[:12,:,1])
+        # print("Bond matrix lay 2:\n", bond_labels[:12,:,2])
+        # print("Bond matrix lay 3:\n", bond_labels[:12,:,3])
+        # print("Bond matrix lay 4:\n", bond_labels[:12,:,4])
 
-        bond_matrix = bond_matrix[:,:,1:] # remove 'vector idx layer', leaving only bond feats
+        bond_labels = bond_labels[:,:,1:] # remove 'vector idx layer', leaving only bond feats
 
-        # Final Output: [mols x destination atoms x bond feats]. If there's no bond, then the bond feats will reflect that
+        # Final Edge Output: [mols x destination atoms x bond feats]. If there's no bond, then the bond feats will reflect that
+        
+        ## Dequantize labels
+        bond_labels = T.from_numpy(bond_labels + np.random.rand(*bond_labels.shape))
+        atom_labels = atom_labels + np.random.rand(*atom_labels.shape) # remember implicit hydrogens stored in here too
+
+        ## Get subgraph embeddings 
+        # For predicting edges: include node-to-predict but not it's bonds/bond features
+        sbgr_a, sbgr_b, sbgr_e = remove_edges_above_node_idx(i, sbgr_a_i_plus_1,sbgr_b_i_plus_1,sbgr_e_i_plus_1)
+
+        none_bond_features = T.tensor([1,0,0,0], dtype=torch.float)
+        sbgr_b[:,-1,:,:] = none_bond_features
+
+        ## Run model on i subgraph 
+        # For predicting nodes:  don't include node-to-predict
+        subgr_loss = 0
+
+        mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
+        # print("Output for node prediction:", mean.shape, var.shape)
+        # print("# atom feats:", num_atom_features(True))
+
+        node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
+        print("Node loss:", node_loss.item())
+        subgr_loss += node_loss.item()
+
+        for target_atom in range(bond_labels.shape[1]):
+            mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
+                                pred_node=False, 
+                                idx_orig=i+1, idx_dest=target_atom)
+            # print("Output for edge prediction:", mean.shape, var.shape)
+            # print("# bond feats:", num_bond_features(True))
+
+            edge_t_loss = NLL_loss(true=bond_labels[:,target_atom,:], mean=mean, var=var)
+            print(f"Edge {target_atom} loss:", edge_t_loss.item())
+            subgr_loss += edge_t_loss.item()
+        
+        print(f"Subgraph-up-to-{i} loss:", subgr_loss)
+        total_loss_per_molecule += subgr_loss
     
+    total_loss_per_molecule = total_loss_per_molecule / a.shape(0)  # avg loss per molecule, on every subgraph
+
+
 
 
 
