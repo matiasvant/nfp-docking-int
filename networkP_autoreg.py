@@ -66,12 +66,12 @@ class GCN(nn.Module):
         lay_count = len(self.layers[1:])
         for i in range(lay_count):
             a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
-            print(f"Layer {i}: {a.shape}")
+            # print(f"Layer {i}: {a.shape}")
             a = self.pool(a, e)
-            print(f"-pool->{a.shape}")
+            # print(f"-pool->{a.shape}")
         subgraph_embedding = self.subgraph_sum(a)
-        print(f"SBgraph shape: {subgraph_embedding.shape}")
-        print(f"Nodes shape: {a.shape}")
+        # print(f"SBgraph shape: {subgraph_embedding.shape}")
+        # print(f"Nodes shape: {a.shape}")
 
         if idx_list is None:
             return subgraph_embedding
@@ -103,9 +103,8 @@ class MLP(nn.Module):
             self.mlp.add_module(f'dropout {j}', nn.Dropout(self.dropout))
             self.mlp.add_module(f'linear {j}', nn.Linear(i, o))
             self.mlp[-1].bias = torch.nn.init.constant_(torch.nn.Parameter(torch.empty(o, device=device)), 0.01)
-
-    # may need to change to logits or smth idk 
-
+        self.mlp.add_module(f'final relu', nn.ReLU()) # expects label vals between [0,x); label val usually <2
+ 
     def forward(self, embeddings):
         i_size = embeddings.shape[1]
         if self.arch is None:
@@ -114,7 +113,8 @@ class MLP(nn.Module):
 
 
 class GaussianMLPs(nn.Module):
-    def __init__(self, dropout=.1, ba=[1, .5, .25]):
+    def __init__(self, dropout=.1, 
+                ba=[1, 1]): # two fully connected layers
         super(GaussianMLPs, self).__init__()
         self.dropout = dropout
         self.ba = ba
