@@ -104,11 +104,12 @@ class dockingDataset(Dataset):
         return self.a[idx], self.b[idx], self.e[idx], (self.labels[idx], self.zinc_ids[idx])
 
 def check_first_row_labels(file):
-    """Check if first row of an input tab-delin .txt is labels"""
+    """Check if first row in csv contains any numerical elements. If no, assume it is label"""
     first_line = file.readline().strip().lstrip('\ufeff')
-    values = first_line.split('\t')
+    values = first_line.split()
     for value in values:
-        # strip, check if the remaining is entirely numeric
+        print("first line label:", value)
+        print("values label:", values)
         stripped = value.translate(value.maketrans('', '', '. -'))
         if stripped.isdigit():
             return None
@@ -116,7 +117,11 @@ def check_first_row_labels(file):
 
 def is_consecutive_list(list):
     for i,elem in enumerate(list[:5]):
-        if int(list[i+1]) != int(elem)+1:
+        try:
+            if int(list[i+1]) != int(elem)+1:
+                return False
+        except (ValueError, IndexError) as e:
+            # Fail if get a non-number
             return False
     return True
 
@@ -126,7 +131,7 @@ def remove_empty_strings_from_list(lst):
 
 def labelsToDF(fname):
     arr = []
-    with open(fname) as f:
+    with open(fname, 'r') as f:
         labels = check_first_row_labels(f)
         if labels is not None:
             next(f)
@@ -147,6 +152,7 @@ def labelsToDF(fname):
         index_list = [arr[i][0][0] for i in range(10)]
         includes_ind = is_consecutive_list(index_list)
 
+        print(f"INCLUDES IND: {includes_ind}")
         if includes_ind:
             df = pd.DataFrame(arr, columns=['index','labels','zinc_id'])
             df = df.drop(columns=['index'])
@@ -161,5 +167,10 @@ def labelsToDF(fname):
     return df
 
 def get_ID_type(DataFrame):
-    ID_column_name = DataFrame.columns[DataFrame.columns.str.contains('zinc_id|Compound ID', case=False, regex=True)].tolist()[0]
+    """Get mol. ID - non-smile ID if one present, smile otherwise."""
+    try:
+        ID_column_name = DataFrame.columns[DataFrame.columns.sstr.contains('zinc_id|Compound ID', case=False, regex=True)].tolist()[0]
+    except (IndexError):
+        ID_column_name = DataFrame.columns[DataFrame.columns.str.contains('smiles', case=False, regex=True)].tolist()[0]
+
     return ID_column_name
