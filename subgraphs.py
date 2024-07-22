@@ -124,8 +124,12 @@ def setup_dataset(input_data, name, reference, input_only=False, no_graph=False)
     if ID == 'smile':
         allData.set_index(ID, inplace=True, drop=False)
     else:
+        print("ID:", ID)
         allData.set_index(ID, inplace=True)
-        allData = pd.merge(allData, reference, on='ID')
+        print("ALLDATA:",allData)
+        print("reference :", reference)
+        allData = allData.join(reference, how='left')
+        print("ALLDATA:",allData)
 
 
     xData = [[index, row['smile']] for index, row in allData.iterrows()] # (ID, smile)
