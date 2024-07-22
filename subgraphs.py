@@ -20,7 +20,14 @@ from rdkit.Chem import Draw
 from rdkit.Chem.Draw import DrawingOptions
 from scipy.stats import linregress
 from sklearn.preprocessing import StandardScaler
+import os
+import re
+import argparse
 
+def contains_problematic_chars(filename):
+    # Define a regex pattern for problematic characters (e.g., slashes, backslashes)
+    pattern = r'[\/\\]'
+    return bool(re.search(pattern, filename))
 
 def group_most_associated_w_fp_feature(fp_i, fp_size, degree_activations, model_data_scaler):
     """Produce a dict of {Molecule: group (atom-radii) that most activates a specific fingerprint feature}'s"""
@@ -102,9 +109,9 @@ def draw_molecule_with_highlights(filename, smiles, highlight_atoms, color=(60.0
 def setup_dataset(input_data, name, reference, input_only=False, no_graph=False):
     # input zIDs
     data_path = find_item_with_keywords(search_dir='./data',keywords=[input_data],file=True)[0]
+    # print("Data path:", data_path)
     allData = labelsToDF(data_path)
-    ID = get_ID_type(allData)
-    allData.set_index(ID, inplace=True)
+    # print("Data cols:", allData.columns)
 
     # Ensure consistent 'smile' label; or get smiles from ZID reference file
     smile_names = ['smiles','smile','SMILEs','SMILES','SMILE']
@@ -112,8 +119,14 @@ def setup_dataset(input_data, name, reference, input_only=False, no_graph=False)
         for option in smile_names:
             if option in allData.columns:
                 allData.rename(columns={option: 'smile'}, inplace=True)
+
+    ID = get_ID_type(allData)
+    if ID == 'smile':
+        allData.set_index(ID, inplace=True, drop=False)
     else:
+        allData.set_index(ID, inplace=True)
         allData = pd.merge(allData, reference, on='ID')
+
 
     xData = [[index, row['smile']] for index, row in allData.iterrows()] # (ID, smile)
     if input_only:
@@ -152,7 +165,6 @@ def find_most_predictive_features(loaded_model, orig_data, reference):
     orig_data_paths = find_item_with_keywords(search_dir="./data", keywords=[orig_data], file=True)
     orig_data_path = min(orig_data_paths, key=len)
     origData = labelsToDF(orig_data_path)
-    
     ID = get_ID_type(origData)
     origData.set_index(ID, inplace=True)
     np_index = origData.index.values
@@ -186,6 +198,12 @@ def find_most_predictive_features(loaded_model, orig_data, reference):
     print(f"---- For {orig_data} model ----\nMost corr:{max_R_feat}\nMost anticorr:{min_R_feat}")
     return max_R_feat, min_R_feat
 
+parser = argparse.ArgumentParser()
+parser.add_argument('-model', '--m', type=str, required=True)
+parser.add_argument('-eval_dataset', '--d', type=str, required=True)
+args = parser.parse_args()
+apply_model, target_dataset = args.m, args.d
+
 
 device = (
     "cuda"
@@ -196,18 +214,19 @@ device = (
 )
 print(f"Using {device} device")
 
-input = "sol_pruned"
+input = "sol_data_ESOL"
 
 # reference SMILEs/zID
 smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
 smileData.columns = ['smile', 'zinc_id']
 smileData.set_index('zinc_id', inplace=True)
 
-dataset = setup_dataset(input_data=input, name="Get conv. activations", reference=smileData, input_only=True)
+dataset = setup_dataset(input_data=target_dataset, name="Get conv. activations", reference=smileData, input_only=True)
 dataloader = DataLoader(dataset, batch_size=12, shuffle=False)
 
 # import model
-model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/r_sol_data_ESOL_model.pth"
+model_path = find_item_with_keywords(search_dir='./src/trainingJobs',keywords=[apply_model],file=True)[0]
+print("Applying model: ", model_path, "\n - on dataset: ", find_item_with_keywords(search_dir='./data',keywords=[target_dataset],file=True)[0])
 checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 model = dockingProtocol(params=checkpoint['params'])
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -240,16 +259,13 @@ fp_len = first_fp.shape[0]
 best_dict = group_most_associated_w_fp_feature(best_feat['Feature #'],fp_len,degree_activations,scaler)
 worst_dict = group_most_associated_w_fp_feature(worst_feat['Feature #'],fp_len,degree_activations,scaler)
 
-subgraph_dict = best_dict
+output_dir = os.path.join(os.getcwd(), 'results', checkpoint['dataset'])
+os.makedirs(output_dir, exist_ok=True)
+best_path, worst_path = os.path.join(output_dir, 'best'), os.path.join(output_dir, 'worst')
+for subdir in [best_path, worst_path]:
+    os.makedirs(subdir, exist_ok=True)
 
-import os
-
-directory = '/data/users/vantilme1803/deva/neural-fingerprint-master/examples'
-file_list = os.listdir(directory)
-png_files = [file for file in file_list if file.lower().endswith('.png')]
-smile_list = [os.path.splitext(file)[0].split('_', 1)[0] for file in png_files]
-
-for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
+for i, (ID, atomTuple) in enumerate(best_dict.items()):
     if 'ZINC' in ID: # get smiles from reference
         print(f"ZID:{ID}")
         smile = get_smile_from_zinc_id(ID, smileData)
@@ -269,19 +285,45 @@ for i, (ID, atomTuple) in enumerate(subgraph_dict.items()):
     atom_index = atomTuple[2]
     atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
 
-    if len(smile) > 8:
-        print(f"Molecule {i}:", smile, "- worst atoms:", atom_neighborhood)
-        ID_name = ''.join(ID.split())
+    if i>=50: break
+    
+    print(f"Molecule {i}:", smile, "- best atoms:", atom_neighborhood)
+    ID_name = ''.join(ID.split())
 
-        if subgraph_dict == best_dict:
-            color = (40.0/255.0, 200.0/255.0, 80.0/255.0)
-        if subgraph_dict == worst_dict:
-            color = (40.0/255.0, 80.0/255.0, 200.0/255.0)
+    color = (40.0/255.0, 200.0/255.0, 80.0/255.0)
 
-        draw_molecule_with_highlights(f"{smile}.png", smile, atom_neighborhood,color) # note both are RDKit ordering, indices align
-
-
+    if not contains_problematic_chars(smile):
+        save_to = os.path.join(best_path, f"best_{smile}.png")
+        draw_molecule_with_highlights(save_to, smile, atom_neighborhood,color) # note both are RDKit ordering, indices align
 
 
+for i, (ID, atomTuple) in enumerate(worst_dict.items()):
+    if 'ZINC' in ID: # get smiles from reference
+        print(f"ZID:{ID}")
+        smile = get_smile_from_zinc_id(ID, smileData)
+    else:
+        if i==0: # get smiles from orig dataset
+            orig_IDs = setup_dataset(input_data=checkpoint['dataset'], name="Retrieve SMILEs", reference=smileData, input_only=True, no_graph=True)
+            orig_IDs = np.array(orig_IDs)
+            orig_IDs = pd.DataFrame(orig_IDs, index=orig_IDs[:, 0], columns=['ID', 'smile'])
+        try:
+            smile = orig_IDs.loc[ID][1]
+        except KeyError:
+            smile = None
+            print(f"Smile not found for{ID}")
+            continue
+    
+    degree = atomTuple[0]
+    atom_index = atomTuple[2]
+    atom_neighborhood = get_atom_neighborhood([smile], atom_index, degree)
 
+    if i>=50: break
 
+    print(f"Molecule {i}:", smile, "- worst atoms:", atom_neighborhood)
+    ID_name = ''.join(ID.split())
+
+    color = (200.0/255.0, 40.0/255.0, 20.0/255.0)
+
+    if not contains_problematic_chars(smile):
+        save_to = os.path.join(worst_path, f"worst_{smile}.png")
+        draw_molecule_with_highlights(save_to, smile, atom_neighborhood,color) # note both are RDKit ordering, indices align

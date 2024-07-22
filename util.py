@@ -19,7 +19,6 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False)
     n = len(smiles)
     nAF = num_atom_features(just_structure=just_structure)
     nBF = num_bond_features(just_structure=just_structure)
-    print("Num atom feats:", nAF, "# bfs:", nBF)
     atoms = np.zeros((n, maxAtom, nAF))
     bonds = np.zeros((n, maxAtom, maxDeg, nBF))
     if just_structure:
@@ -108,8 +107,6 @@ def check_first_row_labels(file):
     first_line = file.readline().strip().lstrip('\ufeff')
     values = first_line.split()
     for value in values:
-        print("first line label:", value)
-        print("values label:", values)
         stripped = value.translate(value.maketrans('', '', '. -'))
         if stripped.isdigit():
             return None
@@ -152,7 +149,6 @@ def labelsToDF(fname):
         index_list = [arr[i][0][0] for i in range(10)]
         includes_ind = is_consecutive_list(index_list)
 
-        print(f"INCLUDES IND: {includes_ind}")
         if includes_ind:
             df = pd.DataFrame(arr, columns=['index','labels','zinc_id'])
             df = df.drop(columns=['index'])
@@ -168,9 +164,13 @@ def labelsToDF(fname):
 
 def get_ID_type(DataFrame):
     """Get mol. ID - non-smile ID if one present, smile otherwise."""
-    try:
-        ID_column_name = DataFrame.columns[DataFrame.columns.sstr.contains('zinc_id|Compound ID', case=False, regex=True)].tolist()[0]
-    except (IndexError):
-        ID_column_name = DataFrame.columns[DataFrame.columns.str.contains('smiles', case=False, regex=True)].tolist()[0]
+    possible_columns = ['zinc_id', 'Compound_ID', 'smile']
+    for col in possible_columns:
+        matching_columns = DataFrame.columns[DataFrame.columns.str.contains(col, case=False, regex=True)].tolist()
+        if matching_columns:
+            # only do smiles if no other options
+            if len(matching_columns) != 1 and 'smile' in matching_columns:
+                        matching_columns.remove('smile')
+            ID_column_name = matching_columns[0]
 
     return ID_column_name

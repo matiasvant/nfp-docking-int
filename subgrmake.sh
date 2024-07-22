@@ -13,4 +13,7 @@
 export PYTHONUNBUFFERED=TRUE
 module load python-libs
 
-python subgraphs.py
+python subgraphs.py --m sol_data_ESOL --d sol_data_ESOL
+python subgraphs.py --m dock_hsprors --d dock_hsprors
+python subgraphs.py --m dock_glprors --d dock_glprors
+python subgraphs.py --m dock_ecprors --d dock_ecprors
