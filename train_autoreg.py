@@ -112,7 +112,7 @@ def replace_elems_w_row_indices(matrix):
     result = np.where(mask, row_indices, -1)
     return result
 
-def NLL_loss(true, mean, var):
+def NLL_loss(true, mean, var, visualize=False):
     var = T.maximum(var, T.tensor(0.1))  # min var for numerical stability
     err = true - mean
     standardized_error = err / var
@@ -131,12 +131,13 @@ def NLL_loss(true, mean, var):
     oa_prod = T.sum(one_over_a)
     var_term = -T.log(oa_prod)
 
-    # print(f"Err: {err}")
-    # print(f"1 / Var: {1 / var}")
-    # print(f"Standardized err: {standardized_error}")
-    # print(f"Pdf Values: {pdf_value}")
-    # print(f"Prod: {prod}")
-    # print("Err term:", err_term.item(), "Var term:", var_term.item())
+    if visualize:
+        print(f"Err: {err}")
+        print(f"1 / Var: {1 / var}")
+        print(f"Standardized err: {standardized_error}")
+        print(f"Pdf Values: {pdf_value}")
+        print(f"Prod: {prod}")
+        print("Err term:", err_term.item(), "Var term:", var_term.item())
 
     loss = err_term + var_term
     return loss
@@ -220,30 +221,36 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 1  # 50 
+epochs = 10  # 50 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
-trainLoss, validLoss = [], []
+trainLoss, validLoss, rsq_list = [], [], []
+
+mse_loss = nn.MSELoss()
+
 for epoch in range(1, epochs + 1):
     print(f'\nEpoch {epoch}\n------------------------------------------------')
     
     stime = time.time()
     model.train()
-    trainLoss = []
+    epoch_loss = 0
 
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>=1:
-            break
+        if batch >= 10: break
+        print(f"Batch {batch}")
+        a,b,e = a.to(device), b.to(device), e.to(device)
 
-        total_loss_per_molecule = 0
-        n_atoms = a.size(1)
-        # loop over n+1 sized subgraphs, predicting next atom & bonds
-        for i in range(n_atoms): # consider 'up-to-atom-i' subgraph for all molecules at each step
-            # if i>=20: break
+        max_atoms = a.size(1)
+        r_list = []
+        batch_loss = torch.tensor([0.0], requires_grad=True)
 
-            # print(f"NODE TO PREDICT(i+1) {i+1}, CURR NODE: {i}")
-            ## For every molecule, get the node labels of i+1, the 'node to predict'
+        for i in range(max_atoms-1): # consider 'up-to-atom-i' subgraph for all molecules at each step
+            ## For every molecule/graph, get the node labels of i+1, the 'node to predict'
             atom_labels = a[:,i+1,:]
+
+            # if i==0 or i%10==0:
+            #     torch.set_printoptions(threshold=torch.inf)
+            #     print(f"Atom {i+1} label features (c,n,... + implict hydrogens):", atom_labels)
 
             ## Get every molecules edge labels of node i+1 *to within current subgraph* (do not include edges to i+2,...)
             sbgr_a_i_plus_1 = a[:,:i+2,:]
@@ -253,12 +260,22 @@ for epoch in range(1, epochs + 1):
             # nodes/connections beyond curr subgraph don't exist
             sbgr_a_i_plus_1, sbgr_b_i_plus_1, sbgr_e_i_plus_1 = remove_edges_above_node_idx(i+1, sbgr_a_i_plus_1,sbgr_b_i_plus_1,sbgr_e_i_plus_1)
 
-            next_atom_edges = sbgr_e_i_plus_1[:,i+1,:] 
+            # only predict for molecules which have a next-atom/didn't end
+            valid_atoms_mask = torch.sum(a[:, i+1, :], dim=1) != 0
+            if valid_atoms_mask.sum() == 0:
+                continue
+
+            atom_labels = atom_labels[valid_atoms_mask]
+            sbgr_a_i_plus_1 = sbgr_a_i_plus_1[valid_atoms_mask]
+            sbgr_b_i_plus_1 = sbgr_b_i_plus_1[valid_atoms_mask]
+            sbgr_e_i_plus_1 = sbgr_e_i_plus_1[valid_atoms_mask]
+
+            next_atom_edges = sbgr_e_i_plus_1[:,i+1,:]
             next_atom_bonds = sbgr_b_i_plus_1[:,i+1,:,:]
 
             e_placeholder_col = np.full((next_atom_edges.shape[0], 1), -1)
             next_atom_edges = np.hstack((next_atom_edges, e_placeholder_col)) # add placeholder bond because '-1' reads as 'last col idx' -- this absorbs all the 'rewrite idx -1' which are otherwise impossible to get rid of; note that since it's being read as an idx all those empty values have to write to somewhere
-            b_placeholder_col = np.full((next_atom_bonds.shape[0], 1, next_atom_bonds.shape[2]), -99)
+            b_placeholder_col = np.full((next_atom_bonds.shape[0], 1, next_atom_bonds.shape[2]), -99).astype(np.float32)
             next_atom_bonds = np.concatenate([next_atom_bonds, b_placeholder_col], axis=1)
 
             eb_concat = np.concatenate([next_atom_edges[:, :, np.newaxis], next_atom_bonds], axis=2)
@@ -292,8 +309,10 @@ for epoch in range(1, epochs + 1):
             # Final Edge Output: [mols x destination atoms x bond feats]. If there's no bond, then the bond feats will reflect that
             
             ## Dequantize labels
-            bond_labels = T.from_numpy(bond_labels + np.random.rand(*bond_labels.shape))
-            atom_labels = atom_labels + np.random.rand(*atom_labels.shape) # remember implicit hydrogens stored in here too
+            nd_a = atom_labels
+
+            # bond_labels = T.from_numpy(bond_labels + np.random.rand(*bond_labels.shape)).float()
+            # atom_labels = atom_labels + np.random.rand(*atom_labels.shape).astype(np.float32) # remember implicit hydrogens stored in here too
 
             ## Get subgraph embeddings 
             # For predicting edges: include node-to-predict but not it's bonds/bond features
@@ -309,41 +328,68 @@ for epoch in range(1, epochs + 1):
             mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
             # print("Output for node prediction:", mean.shape, var.shape)
             # print("# atom feats:", num_atom_features(True))
+        
+            # node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
+            node_loss = mse_loss(atom_labels, mean)
+            _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
+            r_list.append(r_value ** 2)
 
-            node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
-            print("Node loss:", node_loss.item())
-            subgr_loss += node_loss
+            subgr_loss = (node_loss*(atom_labels.shape[0]/a.shape[0])) # MSE weights all equally; as atoms fall off, weight loss lower
+            batch_loss = batch_loss + subgr_loss
 
-            for target_atom in range(bond_labels.shape[1]):
-                mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
-                                    pred_node=False, 
-                                    idx_orig=i+1, idx_dest=target_atom)
-                # print("Output for edge prediction:", mean.shape, var.shape)
-                # print("# bond feats:", num_bond_features(True))
+            # if (epoch==2 and batch==0 and i==0):
+            #     print("First Weights in Epoch 2:")
+            #     for name, param in model.named_parameters():
+            #         if param.requires_grad:
+            #             print(f"Layer: {name}")
+            #             print(param.data)
 
-                edge_t_loss = NLL_loss(true=bond_labels[:,target_atom,:], mean=mean, var=var)
-                subgr_loss += edge_t_loss
+            if (i==0 or i==1):
+                print(f"Epoch {epoch} - Batch {batch} - Subgraph-up-to-{i}:")
 
-                if target_atom == 1:
-                    print(f"Edge {target_atom} loss:", edge_t_loss.item())
-            
-            print(f"Subgraph-up-to-{i} loss:", subgr_loss.item())
+                print("Pre-DQ label:", nd_a[0,:5])
+                if torch.all(nd_a[0,:5] == 0):
+                    print("ALL ZEROES")
+                    # torch.set_printoptions(threshold=torch.inf)
+                    # print("All pre-DQ labels:", nd_a)
+                print("Atom labels:", atom_labels[0,:5])
+                print("Mean labels:", mean[0,:5])
+                print("Node Loss (above):", mse_loss(atom_labels[0,:],mean[0,:]))
 
-            subgr_loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-    
-            total_loss_per_molecule += subgr_loss.item()
+            # for target_atom in range(bond_labels.shape[1]):
+            #     mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
+            #                         pred_node=False, 
+            #                         idx_orig=i+1, idx_dest=target_atom)
+            #     # print("Output for edge prediction:", mean.shape, var.shape)
+            #     # print("# bond feats:", num_bond_features(True))
+
+            #     # edge_t_loss = NLL_loss(true=bond_labels[:,target_atom,:], mean=mean, var=var)
+            #     edge_t_loss = mse_loss(bond_labels[:,target_atom,:], mean)
+            #     subgr_loss += edge_t_loss
+        
+        batch_loss = batch_loss/a.shape[0] # normalize by batchsize
+        epoch_loss += batch_loss.item()
+
+        optimizer.zero_grad()
+        print(f"Batch loss: {batch_loss.item()}")
+
+        batch_loss.backward()       
+        optimizer.step()
+
+    # if (epoch==1):
+    #     print("Last Weights in Epoch 1:")
+    #     for name, param in model.named_parameters():
+    #         if param.requires_grad:
+    #             print(name, param.data)
 
 #         cStop = earlyStop.early_cstop(loss.item())
 #         if cStop: break
     
-        total_loss_per_molecule = total_loss_per_molecule / a.shape(0)  # avg loss per molecule, on every subgraph
-        print("Epoch {epoch} Loss - {total_loss_per_molecule}")
-        trainLoss.append(total_loss_per_molecule)
-
-
-
+    avg_rsq = sum(r_list)/len(r_list)
+    print(f"Epoch {epoch} Loss - {epoch_loss}")
+    print(f"Avg R^2: {avg_rsq}. Per subgraph (should be increasing): {r_list}")
+    trainLoss.append(epoch_loss)
+    rsq_list.append(avg_rsq)
 
 #     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
 #         at, bo, ed, scaled_Y = a.to(device), b.to(device), e.to(device), y.to(device)
@@ -419,7 +465,10 @@ if converged_at != 0:
     epochR = range(1, converged_at + 1)
 else:
     epochR = range(1, epoch + 1)
+
+print("epochR:", epochR, "Trainloss:", trainLoss, "R-Squared:", rsq_list)
 plt.plot(epochR, trainLoss, label='Training Loss', linestyle='-', color='lightgreen')
+plt.plot(epochR, rsq_list, label='R^2', linestyle='-', color='lightblue')
 
 plt.title('Autoreg Training Loss')
 plt.xlabel('Epochs')

@@ -30,8 +30,6 @@ class SubgraphSum(nn.Module):
     def __init__(self):
         super(SubgraphSum, self).__init__()
 
-    ## some way of getting main idx
-
     def forward(self, activations):
         embeds_sum = torch.sum(activations, dim=1)
         return embeds_sum
@@ -99,7 +97,7 @@ class MLP(nn.Module):
         for j, (i, o) in enumerate(self.arch):
             # print(f"Lay {j}: {i}->{o}")
             self.mlp.add_module(f'relu act {j}', nn.ReLU())
-            self.mlp.add_module(f'batch norm {j}', nn.BatchNorm1d(i))
+            self.mlp.add_module(f'layer norm {j}', nn.LayerNorm(i)) #since batch size drops
             self.mlp.add_module(f'dropout {j}', nn.Dropout(self.dropout))
             self.mlp.add_module(f'linear {j}', nn.Linear(i, o))
             self.mlp[-1].bias = torch.nn.init.constant_(torch.nn.Parameter(torch.empty(o, device=device)), 0.01)
