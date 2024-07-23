@@ -100,13 +100,16 @@ class MLP(nn.Module):
             self.mlp.add_module(f'layer norm {j}', nn.LayerNorm(i)) #since batch size drops
             self.mlp.add_module(f'dropout {j}', nn.Dropout(self.dropout))
             self.mlp.add_module(f'linear {j}', nn.Linear(i, o))
-            self.mlp[-1].bias = torch.nn.init.constant_(torch.nn.Parameter(torch.empty(o, device=device)), 0.01)
+            nn.init.constant_(self.mlp[-1].weight, -1)
+            nn.init.constant_(self.mlp[-1].bias, .03) # initialize biases to 0
         self.mlp.add_module(f'final relu', nn.ReLU()) # expects label vals between [0,x); label val usually <2
  
     def forward(self, embeddings):
         i_size = embeddings.shape[1]
         if self.arch is None:
             self.buildModel(i_size, self.o_size)
+        torch.set_printoptions(threshold=torch.inf)
+        print("INPUTS to mlp:", embeddings.shape)
         return self.mlp(embeddings)
 
 
@@ -133,6 +136,14 @@ class GaussianMLPs(nn.Module):
 
         return mean, var
 
+    def print_weights(self, label):
+        for name, param in self.mean_mlp.mlp.named_parameters():
+            if 'weight' in name and 'linear' in name:
+                print(f"{label} {name}: {param.shape}")
+                if torch.all(param == -1):
+                    print("Weights reset to -1.")
+                    break
+
     
 class GCN_Autoreg(nn.Module):
     def __init__(self, params):
@@ -151,7 +162,8 @@ class GCN_Autoreg(nn.Module):
         if pred_node:
             subgr_embeds = self.GCN(a_b_e_input)
             n_feats = num_atom_features(just_structure=True)
-            mean, var = self.Node_Pred(subgr_embeds, n_feats) 
+            mean, var = self.Node_Pred(subgr_embeds, n_feats)
+            self.Node_Pred.print_weights("Node Mean Weight") 
         
         else: # predict edge/bond between two arbitrary nodes
             subgr_embeds, [orig_embed, dest_embed] = self.GCN(a_b_e_input, [idx_orig, idx_dest])
@@ -164,6 +176,7 @@ class GCN_Autoreg(nn.Module):
 
             n_feats = num_bond_features(just_structure=True)
             mean, var = self.Edge_Pred(combined, n_feats)
+            self.Edge_Pred.print_weights("Edge Mean Weight")
         
         return mean, var
     

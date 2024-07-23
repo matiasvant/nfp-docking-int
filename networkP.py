@@ -28,14 +28,14 @@ class GraphLookup(nn.Module):
         self.to(device)
 
     def temporal_padding(self, x, paddings=(1, 0), pad_value=0):
-        print(f"X: {x.shape}, {x}")
+        # print(f"X: {x.shape}, {x}")
         if not isinstance(paddings, (tuple, list, np.ndarray)):
             paddings = (paddings, paddings)
         output = torch.zeros(x.size(0), x.size(1) + sum(paddings), x.size(2), device=device)
         output[:, :paddings[0], :] = pad_value
         output[:, paddings[1]:, :] = pad_value
         output[:, paddings[0]: paddings[0]+x.size(1), :] = x
-        print(f"Output: {output.shape}, {output}")
+        # print(f"Output: {output.shape}, {output}")
         return output
     
     def lookup_neighbors(self, atoms, edges, maskvalue=0, include_self=False):
@@ -169,8 +169,8 @@ class nfpDocking(nn.Module):
         for i in range(lay_count):
             if return_conv_activs and i == lay_count-1: # if last store activations
                 activations, a = self.layersArr[i]((a, b, e), return_conv_activs=True)
-                print("Activations:",activations)
-                print("\nA:",a)
+                # print("Activations:",activations)
+                # print("\nA:",a)
             else:
                 a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
             a = self.pool(a, e)
