@@ -221,7 +221,7 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 10  # 50 
+epochs = 5  # 50 
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
@@ -236,15 +236,13 @@ for epoch in range(1, epochs + 1):
     epoch_loss = 0
 
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch >= 10: break
-        print(f"Batch {batch}")
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
         r_list = []
         batch_loss = torch.tensor([0.0], requires_grad=True)
 
-        for i in range(max_atoms-1): # consider 'up-to-atom-i' subgraph for all molecules at each step
+        for i in range(1, max_atoms-1): # consider 'up-to-atom-i' subgraph for all molecules at each step
             ## For every molecule/graph, get the node labels of i+1, the 'node to predict'
             atom_labels = a[:,i+1,:]
 
@@ -337,25 +335,6 @@ for epoch in range(1, epochs + 1):
             subgr_loss = (node_loss*(atom_labels.shape[0]/a.shape[0])) # MSE weights all equally; as atoms fall off, weight loss lower
             batch_loss = batch_loss + subgr_loss
 
-            # if (epoch==2 and batch==0 and i==0):
-            #     print("First Weights in Epoch 2:")
-            #     for name, param in model.named_parameters():
-            #         if param.requires_grad:
-            #             print(f"Layer: {name}")
-            #             print(param.data)
-
-            if (i==0 or i==1):
-                print(f"Epoch {epoch} - Batch {batch} - Subgraph-up-to-{i}:")
-
-                print("Pre-DQ label:", nd_a[0,:5])
-                if torch.all(nd_a[0,:5] == 0):
-                    print("ALL ZEROES")
-                    # torch.set_printoptions(threshold=torch.inf)
-                    # print("All pre-DQ labels:", nd_a)
-                print("Atom labels:", atom_labels[0,:5])
-                print("Mean labels:", mean[0,:5])
-                print("Node Loss (above):", mse_loss(atom_labels[0,:],mean[0,:]))
-
             # for target_atom in range(bond_labels.shape[1]):
             #     mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
             #                         pred_node=False, 
@@ -366,12 +345,15 @@ for epoch in range(1, epochs + 1):
             #     # edge_t_loss = NLL_loss(true=bond_labels[:,target_atom,:], mean=mean, var=var)
             #     edge_t_loss = mse_loss(bond_labels[:,target_atom,:], mean)
             #     subgr_loss += edge_t_loss
+            if i==1 or i==2:
+                print(f"Batch {batch} - Subgraph-up-to-{i}:")
+                print(f"True: {atom_labels[0,:5]}, \n Pred: {mean[0,:5]}")
         
         batch_loss = batch_loss/a.shape[0] # normalize by batchsize
         epoch_loss += batch_loss.item()
 
         optimizer.zero_grad()
-        print(f"Batch loss: {batch_loss.item()}")
+        print(f"Batch {batch} loss: {batch_loss.item()}")
 
         batch_loss.backward()       
         optimizer.step()
