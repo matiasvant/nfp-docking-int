@@ -81,7 +81,7 @@ class GCN(nn.Module):
             return subgraph_embedding, node_embeds_list
 
 class MLP(nn.Module):
-    def __init__(self, in_size, out_size, dropout, ba):
+    def __init__(self, in_size, out_size, dropout, ba, out_type='ReLU'):
         super(MLP, self).__init__()
         self.i = in_size
         self.o = out_size
@@ -89,9 +89,9 @@ class MLP(nn.Module):
         self.arch = None
         self.dropout = dropout
         self.mlp = nn.Sequential()
-        self.buildModel(self.i,self.o)
+        self.buildModel(self.i,self.o, out_type)
     
-    def buildModel(self, in_size, out_size):
+    def buildModel(self, in_size, out_size, out_type):
         self.ba = [int(round(l * in_size)) for l in self.ba] # make layers porportional to input size
         self.arch = [(in_size, self.ba[0])] + list(zip(self.ba[:-1], self.ba[1:])) + [(self.ba[-1], out_size)] 
         for j, (i, o) in enumerate(self.arch):
@@ -100,8 +100,12 @@ class MLP(nn.Module):
             self.mlp.add_module(f'layer norm {j}', nn.LayerNorm(i)) #since batch size drops
             self.mlp.add_module(f'dropout {j}', nn.Dropout(self.dropout))
             self.mlp.add_module(f'linear {j}', nn.Linear(i, o))
-            nn.init.constant_(self.mlp[-1].bias, .03) 
-        self.mlp.add_module(f'final relu', nn.ReLU()) # [0,x) labels
+            nn.init.constant_(self.mlp[-1].bias, .03)
+        if out_type == 'ReLU':
+            self.mlp.add_module(f'final relu', nn.ReLU()) # [0,x) labels
+        if out_type == 'softplus':
+            self.mlp.add_module(f'final softplus', nn.Softplus())
+
  
     def forward(self, embeddings):
         i_size = embeddings.shape[1]
@@ -121,7 +125,7 @@ class GaussianMLPs(nn.Module):
     
     def buildMLPs(self, i, o):
         self.mean_mlp = MLP(i, o, self.dropout, self.ba)
-        self.var_mlp = MLP(i, o, self.dropout, self.ba)
+        self.var_mlp = MLP(i, o, self.dropout, self.ba, out_type='softplus') # var shouldn't be 0
 
     def forward(self, embeds, label_size):
         i = embeds.shape[1]
@@ -160,6 +164,7 @@ class GCN_Autoreg(nn.Module):
             subgr_embeds = self.GCN(a_b_e_input)
             n_feats = num_atom_features(just_structure=True)
             mean, var = self.Node_Pred(subgr_embeds, n_feats)
+            var = torch.ones(mean.shape)
             # self.Node_Pred.print_weights("Node Mean Weight") 
         
         else: # predict edge/bond between two arbitrary nodes
