@@ -15,7 +15,7 @@ def padDim(arr, size, dim, val=0, padR=True):
     padded[dim] = (0, size - arr.shape[dim]) if padR else (size - arr.shape[dim], 0)
     return np.pad(arr, pad_width=padded, mode='constant', constant_values=val)
 
-def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False):
+def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False, atom_masks=None):
     n = len(smiles)
     nAF = num_atom_features(just_structure=just_structure)
     nBF = num_bond_features(just_structure=just_structure)
@@ -39,16 +39,26 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False)
             atoms = padDim(atoms, len(molAtoms), axis=1)
             bonds = padDim(bonds, len(molAtoms), axis=1)
             edges = padDim(edges, len(molAtoms), axis=1, val=-1)
-        
+
+        mask_indices = atom_masks[molIdx] if atom_masks else []
+
         for atomIdx, atom in enumerate(molAtoms):
-            atoms[molIdx, atomIdx, : nAF] = getAtomFeatures(atom, just_structure=just_structure)
-            idxMap[atom.GetIdx()] = atomIdx
+            if atomIdx in mask_indices:
+                # [0,0,0,...] = 'atom DNE'
+                atoms[molIdx, atomIdx, :] = 0
+                print('SKIPPED ATOM:', atomIdx)
+            else:
+                atoms[molIdx, atomIdx, : nAF] = getAtomFeatures(atom, just_structure=just_structure)
+                idxMap[atom.GetIdx()] = atomIdx
 
         for bond in molBonds:
             atom1Idx = idxMap[bond.GetBeginAtom().GetIdx()]
             atom2Idx = idxMap[bond.GetEndAtom().GetIdx()]
             atom1Neighbor = len(connMat[atom1Idx])
             atom2Neighbor = len(connMat[atom2Idx])
+
+            if atom1Idx in mask_indices or atom2Idx in mask_indices:
+                continue
 
             if max(atom1Neighbor, atom2Neighbor) + 1 > bonds.shape[2]:
                 bonds = padDim(bonds, max(atom1Neighbor, atom2Neighbor) + 1, axis=2)
@@ -63,7 +73,8 @@ def buildFeats(smiles, maxDeg=5, maxAtom=70, ds='unknown', just_structure=False)
         
         for atom1Idx, ngb in enumerate(connMat):
             d = len(ngb)
-            edges[molIdx, atom1Idx, : d] = ngb
+            if atom1Idx not in mask_indices:
+                edges[molIdx, atom1Idx, : d] = ngb
 
     return T.from_numpy(atoms).float(), T.from_numpy(bonds).float(), T.from_numpy(edges).long()
 
@@ -85,14 +96,14 @@ def find_item_with_keywords(search_dir, keywords: List[str], dir=False, file=Fal
 class dockingDataset(Dataset):
     def __init__(self, train, labels, 
     maxa=70, maxd=6, # 6 bond hard cap; 70 atom soft limit
-    name='unknown', just_structure=False):
+    name='unknown', just_structure=False, atom_masks=None):
         # self.train = (zid, smile), self.label = (bin label)
         self.train = train
         self.labels = T.from_numpy(np.array(labels)).float()
         self.maxA = maxa
         self.maxD = maxd
         smiles = [x[1] for x in self.train]
-        self.a, self.b, self.e = buildFeats(smiles, self.maxD, self.maxA, name, just_structure)
+        self.a, self.b, self.e = buildFeats(smiles, self.maxD, self.maxA, name, just_structure, atom_masks)
         self.zinc_ids = [x[0] for x in self.train]
         self.smiles = [x[1] for x in self.train]
 
