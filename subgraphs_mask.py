@@ -20,13 +20,12 @@ from rdkit.Chem import Draw
 from rdkit.Chem.Draw import DrawingOptions
 from rdkit.Chem import AllChem
 from rdkit.Chem import BRICS
-
 from scipy.stats import linregress
 from sklearn.preprocessing import StandardScaler
 import os
 import re
-import argparse
 from itertools import combinations
+import pickle
 
 
 def flatten(nested, except_last=False):
@@ -138,12 +137,20 @@ def setup_dataset(input_data, name, reference, input_only=False, no_graph=False)
                             name=name, just_structure=False)
     return dataset
 
-def all_combinations(lst):
+def all_combinations(lst, lists=False):
     result = []
-    for r in range(1, len(lst) + 1):
-        for comb in combinations(lst, r):
-            result.append([item for sublist in comb for item in sublist])
-    return result
+
+    if lists:
+        for r in range(1, len(lst) + 1):
+            for comb in combinations(lst, r):
+                result.append([item for sublist in comb for item in sublist])
+        return result
+
+    else:
+        for r in range(1, len(lst) + 1):
+            for comb in combinations(lst, r):
+                result.append(' '.join(comb))
+        return result
 
 def return_fg_without_c_i_wash(fg_with_c_i, fg_without_c_i):
     # the fragment generated from smarts would have a redundant carbon, here to remove the redundant carbon
@@ -202,8 +209,8 @@ def return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list):
     group_list = flatten(nested=hit_at_wash, except_last=True)
     name_list = []
     for i, name in enumerate(hit_fg_name_wash):
-        for individual_group in hit_at_wash[i]:
-            name_list.append(name)
+        for j, individual_group in enumerate(hit_at_wash[i]):
+            name_list.append(name+'_'+str(j))
 
     return group_list, name_list
 
@@ -215,60 +222,10 @@ from rdkit.Chem import BRICS
 from rdkit.Chem import FragmentCatalog, RDConfig
 import os
 
-
-
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.Chem import rdmolops
 from collections import defaultdict
-
-
-
-# def get_murcko_scaffold_and_fragments(smiles):
-#     # Convert SMILES to molecule
-#     mol = Chem.MolFromSmiles(smiles)
-#     if mol is None:
-#         raise ValueError("Invalid SMILES string")
-
-#     # Generate Murcko Scaffold
-#     scaffold = MurckoScaffold.GetScaffoldForMol(mol)
-    
-#     # Extract rings from the scaffold
-#     rings = rdmolops.GetSymmSSSR(scaffold)
-    
-#     # Convert scaffold to SMILES for output
-#     scaffold_smiles = Chem.MolToSmiles(scaffold)
-    
-#     # Convert rings to SMILES
-#     ring_smiles = [Chem.MolToSmiles(ring) for ring in rings]
-    
-#     return scaffold_smiles, ring_smiles
-
-smiles = "CC(=O)OC1=CC=CC=C1C(=O)O"
-
-# mol = Chem.MolFromSmiles(smiles)
-# ri = mol.GetRingInfo()
-# atominfo = ri.AtomRings()
-# print(atominfo)
-# scaffold = MurckoScaffold.GetScaffoldForMol(mol)
-# scaffold_atom_indices = [atom.GetIdx() for atom in scaffold.GetAtoms()]
-# print("SCFF", scaffold_atom_indices)
-# draw_molecule(f"test_plain.png", smiles)
-# draw_molecule(f"test_rings.png", smiles, highlight_atoms=flatten(atominfo), color=(100.0/255.0, 200.0/255.0, 20.0/255.0))
-
-# for i, ring in enumerate(atominfo):
-#     ring = flatten(ring)
-#     draw_molecule(f"test_ring{i}.png", smiles, highlight_atoms=ring, color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
-
-# hit_fg_at, hit_fg_name = return_fg_hit_atom(smiles, fg_name_list, fg_with_ca_list, fg_without_ca_list)
-# flattened_list = [item for sublist in hit_fg_at for item in sublist]
-# hit_fg_at = [item for sublist in flattened_list for item in sublist]
-# draw_molecule("test_FGs.png", smiles, highlight_atoms=hit_fg_at, color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
-
-
-# scaffold_smiles, ring_smiles = get_murcko_scaffold_and_fragments(smiles)
-# print("Murcko Scaffold SMILES:", scaffold_smiles)
-# print("Murcko Ring SMILES:", ring_smiles)
 
 
 
@@ -306,6 +263,7 @@ def get_ring_names(mol, ring_systems_dict):
     if not atom_rings:
         return [], []
 
+    count_dict = {}
     for i, ring in enumerate(atom_rings):
         matched = False
         try: 
@@ -314,24 +272,30 @@ def get_ring_names(mol, ring_systems_dict):
             for name, pattern in ring_systems_dict.items():
                 pattern_mol = Chem.MolFromSmiles(pattern)
                 if ring_mol.HasSubstructMatch(pattern_mol):
-                    found_rings.append(name)
                     matched = True
+                    if name not in count_dict:
+                        count_dict[name] = 0
+                    else:
+                        count_dict[name] += 1
+                    found_rings.append(name+'_'+str(count_dict[name]))
                     break
             if not matched:
-                found_rings.append(f'Unknown Ring {i}')
+                uk_label = 'UnknownRing'
+                if uk_label not in count_dict:
+                    count_dict[uk_label] = 0
+                else:
+                    count_dict[uk_label] += 1
+                found_rings.append(uk_label+'_'+str(count_dict[uk_label]))
         
         except Chem.AtomValenceException as e:
             print(f"AtomValenceException occurred while processing ring {i}: {e}")
-            found_rings.append(f'Error Ring {i} - AtomValenceException')
         
         except Chem.KekulizeException as e:
             print(f"KekulizeException occurred while processing ring {i}: {e}")
-            found_rings.append(f'Error Ring {i} - KekulizeException')
             draw_molecule(f"kek_err_{mol}.png", 'none', highlight_atoms=flatten(ring), color=(200.0/255.0, 40.0/255.0, 20.0/255.0), mol=mol)
-        
+
         except Exception as e:
             print(f"An unexpected error occurred while processing ring {i}: {e}")
-            found_rings.append(f'Error Ring {i} - Unexpected Error')
     
     return atom_rings, found_rings
 
@@ -380,19 +344,19 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         # temp dataset
     }
 
-    molecule_data = defaultdict(lambda: defaultdict(float))
-    subgraph_improvements = defaultdict(lambda: {'atoms': []})
+    mol_dict = {}
 
     loaded_model.eval()
     for batch, (a, b, e, (y, ID)) in enumerate(dataloader):
-        if batch>200: break
+        if batch>30: break
+        ID = ID[0]
         # at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
-        if 'ZINC' in ID[0]:
+        if 'ZINC' in ID:
             smile = dataset.smiles[batch]
-            ID = [smile]
+            ID = smile
 
         # get functional groups
-        mol = Chem.MolFromSmiles(ID[0])
+        mol = Chem.MolFromSmiles(ID)
         fg_at, fg_name = return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list)
         # print("Hit atoms:", fg_at, "\n Hit names:", fg_name)
         # draw_molecule("test_FGs.png", "ClCCC#N", highlight_atoms=flatten(hit_fg_at), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
@@ -402,18 +366,26 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         # print("Ring ats:", ring_ats, "Names:\n", ring_names)
         # draw_molecule(f"testr_{ring_names}.png", ID[0], highlight_atoms=flatten(ring_ats), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
 
-        # subgr_nm = flatten()
+        # scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+        # scaffold_atom_indices = [atom.GetIdx() for atom in scaffold.GetAtoms()]
+        # print("SCFF", scaffold_atom_indices)
+        # draw_molecule(f"test_plain.png", smiles)
+        # draw_molecule(f"test_rings.png", smiles, highlight_atoms=flatten(atominfo), color=(100.0/255.0, 200.0/255.0, 20.0/255.0))
+
         subgr_at = fg_at + ring_ats
-        full_subgr_at = all_combinations(subgr_at)
+        subgr_nm = fg_name + ring_names 
+        full_subgr_at = all_combinations(subgr_at, lists=True)
+        full_subgr_nm = all_combinations(subgr_nm)
         # print("full subgrat", full_subgr_at)
-        print("Groups:", len(subgr_at), "-(choose)->", len(full_subgr_at))
+        # print("full subgr-name", full_subgr_nm)
+        # print("Groups:", len(subgr_at), "-(choose)->", len(full_subgr_at))
 
-        masked_a = a.repeat(1+len(subgr_at),1,1)  # copy the smile n times
-        masked_b = b.repeat(1+len(subgr_at),1,1,1)
-        masked_e = e.repeat(1+len(subgr_at),1,1)
+        # Test every fg-combo group
+        masked_a = a.repeat(1+len(full_subgr_at),1,1)  # copy the smile n times
+        masked_b = b.repeat(1+len(full_subgr_at),1,1,1)
+        masked_e = e.repeat(1+len(full_subgr_at),1,1)
 
-        # produce 1 mask group per subset
-        for copy_i, atom_group in enumerate(subgr_at, start=1):
+        for copy_i, atom_group in enumerate(full_subgr_at, start=1):
             remove_nodes(atom_group, copy_i, masked_a, masked_b, masked_e)
 
         with torch.no_grad():
@@ -426,13 +398,19 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         original = preds[0]
         preds[1:] = preds[1:] - original
 
-        # scaffold = MurckoScaffold.GetScaffoldForMol(mol)
-        # scaffold_atom_indices = [atom.GetIdx() for atom in scaffold.GetAtoms()]
-        # print("SCFF", scaffold_atom_indices)
-        # draw_molecule(f"test_plain.png", smiles)
-        # draw_molecule(f"test_rings.png", smiles, highlight_atoms=flatten(atominfo), color=(100.0/255.0, 200.0/255.0, 20.0/255.0))
+        subgr_changes = defaultdict(float) # may add atoms:{'change': 0.0, 'atoms':[]}
+        for groups, change in zip(full_subgr_nm, preds[1:]):
+            subgr_changes[groups] = change[0]
 
-input = "dock_acease_pruned.txt"
+        mol_dict[ID] = subgr_changes
+    
+    return mol_dict
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-data', '--d', type=str, required=True)
+args = parser.parse_args()
+data_name = args.d
+# data_name = 'dock_acease_pruned.txt'
 
 # reference SMILEs/zID
 smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
@@ -440,9 +418,22 @@ smileData.columns = ['smile', 'zinc_id']
 smileData.set_index('zinc_id', inplace=True)
 
 # import model
-model_path = "/data/users/vantilme1803/nfp-docking/src/trainingJobs/r_dock_glprors_model.pth"
+model_path = find_item_with_keywords('./src/trainingJobs', [args.d, 'model'], dir=False, file=True)
+model_path = model_path[0]
 checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 model = dockingProtocol(params=checkpoint['params'])
 model.load_state_dict(checkpoint['model_state_dict'])
 
-SME(model, input, smileData, checkpoint['scaler'])
+print("Data:", data)
+print("Model:", model_path)
+
+mol_dict = SME(model, data_name, smileData, checkpoint['scaler'])
+with open('subgr_mask_outdict.pkl', 'wb') as file:
+    pickle.dump(mol_dict, file)
+
+# print results
+for i,(mol,subgr_dict) in enumerate(mol_dict.items()):
+    if i > 20: break
+    print("Mol: ", mol)
+    for fg,change in subgr_dict.items():
+        print("      ", fg, "-- ",change)
