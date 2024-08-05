@@ -26,6 +26,7 @@ from sklearn.preprocessing import StandardScaler
 import os
 import re
 import argparse
+from itertools import combinations
 
 
 def flatten(nested, except_last=False):
@@ -78,7 +79,7 @@ def get_smile_from_dataset(ID, DataFrame):
         return None
 
 
-def draw_molecule(filename, smiles, highlight_atoms=None, color=(60.0/255.0, 80.0/255.0, 10.0/255.0)):
+def draw_molecule(filename, smiles, highlight_atoms=None, color=(60.0/255.0, 80.0/255.0, 10.0/255.0), mol=None):
     figsize = (300, 300)
     highlight_color = color
 
@@ -87,7 +88,8 @@ def draw_molecule(filename, smiles, highlight_atoms=None, color=(60.0/255.0, 80.
     drawoptions.elemDict = {}
     drawoptions.bgColor=None
 
-    mol = Chem.MolFromSmiles(smiles)
+    if not mol:
+        mol = Chem.MolFromSmiles(smiles)
     if highlight_atoms is None:
         fig = Draw.MolToMPL(mol, size=figsize, options=drawoptions,fitImage=False)
     else: 
@@ -136,6 +138,12 @@ def setup_dataset(input_data, name, reference, input_only=False, no_graph=False)
                             name=name, just_structure=False)
     return dataset
 
+def all_combinations(lst):
+    result = []
+    for r in range(1, len(lst) + 1):
+        for comb in combinations(lst, r):
+            result.append([item for sublist in comb for item in sublist])
+    return result
 
 def return_fg_without_c_i_wash(fg_with_c_i, fg_without_c_i):
     # the fragment generated from smarts would have a redundant carbon, here to remove the redundant carbon
@@ -189,7 +197,15 @@ def return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list):
         if len(hit_at_wash_j) > 0:
             hit_at_wash.append(hit_at_wash_j)
             hit_fg_name_wash.append(hit_fg_name[j])
-    return hit_at_wash, hit_fg_name_wash
+
+    # flatten atom & name lists to individ. groups
+    group_list = flatten(nested=hit_at_wash, except_last=True)
+    name_list = []
+    for i, name in enumerate(hit_fg_name_wash):
+        for individual_group in hit_at_wash[i]:
+            name_list.append(name)
+
+    return group_list, name_list
 
 from rdkit import Chem
 from rdkit.Chem import Draw
@@ -284,20 +300,40 @@ def remove_nodes(node_list,smile_i,a,b,e):
 def get_ring_names(mol, ring_systems_dict):
     ri = mol.GetRingInfo()
     atom_rings = ri.AtomRings()
+    atom_rings = [list(ring) for ring in atom_rings]
     found_rings = []
 
     if not atom_rings:
         return [], []
 
-    for ring in atom_rings:
-        ring_smiles = Chem.MolFragmentToSmiles(mol, atomsToUse=ring, kekuleSmiles=True)
-        for name, pattern in ring_systems.items():
-            pattern_mol = Chem.MolFromSmiles(pattern)
-            if mol.HasSubstructMatch(pattern_mol):
-                found_rings.append(name)
-                break
+    for i, ring in enumerate(atom_rings):
+        matched = False
+        try: 
+            ring_smiles = Chem.MolFragmentToSmiles(mol, atomsToUse=ring, kekuleSmiles=True)
+            ring_mol = Chem.MolFromSmiles(ring_smiles)
+            for name, pattern in ring_systems_dict.items():
+                pattern_mol = Chem.MolFromSmiles(pattern)
+                if ring_mol.HasSubstructMatch(pattern_mol):
+                    found_rings.append(name)
+                    matched = True
+                    break
+            if not matched:
+                found_rings.append(f'Unknown Ring {i}')
+        
+        except Chem.AtomValenceException as e:
+            print(f"AtomValenceException occurred while processing ring {i}: {e}")
+            found_rings.append(f'Error Ring {i} - AtomValenceException')
+        
+        except Chem.KekulizeException as e:
+            print(f"KekulizeException occurred while processing ring {i}: {e}")
+            found_rings.append(f'Error Ring {i} - KekulizeException')
+            draw_molecule(f"kek_err_{mol}.png", 'none', highlight_atoms=flatten(ring), color=(200.0/255.0, 40.0/255.0, 20.0/255.0), mol=mol)
+        
+        except Exception as e:
+            print(f"An unexpected error occurred while processing ring {i}: {e}")
+            found_rings.append(f'Error Ring {i} - Unexpected Error')
     
-    return atom_info, found_rings
+    return atom_rings, found_rings
 
 def SME(loaded_model, orig_data, reference, scaler=None):
     dataset = setup_dataset(input_data=orig_data, name="SME", reference=reference)
@@ -326,64 +362,65 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         "Cyclopentane": "C1CCCC1",
         "Cyclobutane": "C1CCC1",
         "Cyclopropane": "C1CC1",
-        "Pyridine": "c1ccncc1",
-        "Pyrrole": "c1cccn1",
-        "Furan": "c1ccoc1",
-        "Thiophene": "c1ccsc1",
-        "Imidazole": "c1cncn1",
-        "Oxazole": "c1cnco1",
-        "Thiazole": "c1cscn1",
-        "Indole": "c1ccc2c(c1)ccn2",
-        "Isoquinoline": "c1ccc2c(c1)ccnc2",
-        "Quinoline": "c1ccc2nc3ccccc3cc2c1",
-        "Naphthalene": "c1ccc2ccccc2c1",
-        "Anthracene": "c1ccc2cc3ccccc3cc2c1",
-        "Phenanthrene": "c1ccc2c(c1)ccc3ccccc23"
+	    "Piperidine": "C1CCNCC1",
+        "Pyridine": "C1=CC=NC=C1",
+        "Pyrrole": "C1=CNC=C1",
+        "Furan": "C1=COC=C1",
+        "Thiophene": "C1=CSC=C1",
+        "Imidazole": "C1=CN=CN1",
+        "Oxazole": "C1=COC=N1",
+        "Thiazole": "C1=NC=NN1",
+        "Indole": "C1=CC=C2C(=C1)C=CN2",
+	    "Dioxane": "C1CCOOC1.C1CCOOC1",
+        "Isoquinoline": "C1=CC=C2C=NC=CC2=C1",
+        "Quinoline": "C1=CC=C2C(=C1)C=CC=N2",
+        "Naphthalene": "C1=CC=C2C=CC=CC2=C1",
+        "Anthracene": "C1=CC=C2C=C3C=CC=CC3=CC2=C1",
+        "Phenanthrene": "C1=CC=C2C(=C1)C=CC3=CC=CC=C32"
         # temp dataset
     }
 
     molecule_data = defaultdict(lambda: defaultdict(float))
-    subgraph_improvements = defaultdict(lambda: {'sum': 0.0, 'atoms': []})
+    subgraph_improvements = defaultdict(lambda: {'atoms': []})
 
     loaded_model.eval()
-    for batch, (a, b, e, (y, zID)) in enumerate(dataloader):
-        if batch>20: break
-        if batch<100:
-            # smile = dataset.smiles[batch]
-            print("ID (should be smile):", zID)
+    for batch, (a, b, e, (y, ID)) in enumerate(dataloader):
+        if batch>200: break
         # at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
+        if 'ZINC' in ID[0]:
+            smile = dataset.smiles[batch]
+            ID = [smile]
 
         # get functional groups
-        mol = Chem.MolFromSmiles("ClCCC#N")
-        hit_fg_at, hit_fg_name = return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list)
-        print("Hit atoms:", hit_fg_at, "\n Hit names:", hit_fg_name)
-        draw_molecule("test_FGs.png", "ClCCC#N", highlight_atoms=flatten(hit_fg_at), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
+        mol = Chem.MolFromSmiles(ID[0])
+        fg_at, fg_name = return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list)
+        # print("Hit atoms:", fg_at, "\n Hit names:", fg_name)
+        # draw_molecule("test_FGs.png", "ClCCC#N", highlight_atoms=flatten(hit_fg_at), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
 
         # get rings
         ring_ats, ring_names = get_ring_names(mol, ring_systems)
+        # print("Ring ats:", ring_ats, "Names:\n", ring_names)
+        # draw_molecule(f"testr_{ring_names}.png", ID[0], highlight_atoms=flatten(ring_ats), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
 
-        print("fgat", hit_fg_at, "ringat", ring_ats)
-        subgr_at = flatten(hit_fg_at, except_last=True) + flatten(ring_ats, except_last=True)
-        print("subgrat", subgr_at)
+        # subgr_nm = flatten()
+        subgr_at = fg_at + ring_ats
+        full_subgr_at = all_combinations(subgr_at)
+        # print("full subgrat", full_subgr_at)
+        print("Groups:", len(subgr_at), "-(choose)->", len(full_subgr_at))
 
-        # [[1],[3],[9]] -- diff instances of '-F' group
-        # ## todo: add in combos
-
-        print("Num subgraphs:", len(subgr_at))
         masked_a = a.repeat(1+len(subgr_at),1,1)  # copy the smile n times
         masked_b = b.repeat(1+len(subgr_at),1,1,1)
         masked_e = e.repeat(1+len(subgr_at),1,1)
 
+        # produce 1 mask group per subset
         for copy_i, atom_group in enumerate(subgr_at, start=1):
             remove_nodes(atom_group, copy_i, masked_a, masked_b, masked_e)
 
         with torch.no_grad():
             preds = loaded_model((masked_a, masked_b, masked_e)).reshape(-1, 1)
-            print("Preds:", preds)
-            print("A - shape:", masked_a.shape)
             if scaler:
                 preds = scaler.inverse_transform(preds)
-                print("Scaled pred:", preds)
+                # print("Scaled pred:", preds)
 
         # old - new = difference
         original = preds[0]
