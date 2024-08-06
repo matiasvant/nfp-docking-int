@@ -26,7 +26,8 @@ import os
 import re
 from itertools import combinations
 import pickle
-
+from tqdm import tqdm
+from subgraphs import setup_dataset, get_atom_neighborhood
 
 def flatten(nested, except_last=False):
     """Flattens nested tuple or list"""
@@ -97,45 +98,6 @@ def draw_molecule(filename, smiles, highlight_atoms=None, color=(60.0/255.0, 80.
     fig.gca().set_axis_off()
     fig.savefig(filename, bbox_inches='tight')
     plt.close(fig)
-
-
-def setup_dataset(input_data, name, reference, input_only=False, no_graph=False):
-    # input zIDs
-    data_path = find_item_with_keywords(search_dir='./data',keywords=[input_data],file=True)[0]
-    # print("Data path:", data_path)
-    allData = labelsToDF(data_path)
-    # print("Data cols:", allData.columns)
-
-    # Ensure consistent 'smile' label; or get smiles from ZID reference file
-    smile_names = ['smiles','smile','SMILEs','SMILES','SMILE']
-    if any(option in allData.columns for option in smile_names):
-        for option in smile_names:
-            if option in allData.columns:
-                allData.rename(columns={option: 'smile'}, inplace=True)
-
-    ID = get_ID_type(allData)
-    if ID == 'smile':
-        allData.set_index(ID, inplace=True, drop=False)
-    else:
-        # print("ID:", ID)
-        allData.set_index(ID, inplace=True)
-        allData = allData.join(reference, how='left')
-        allData.dropna(axis=0, inplace=True)
-
-    xData = [[index, row['smile']] for index, row in allData.iterrows()] # (ID, smile)
-    if input_only:
-        yData = [0] * len(xData)
-    else: 
-        yData = allData['labels'].values.tolist()
-
-    if no_graph:
-        if input_only: return xData
-        return xData, yData
-
-    dataset = dockingDataset(train=xData, 
-                            labels=yData,
-                            name=name, just_structure=False)
-    return dataset
 
 def all_combinations(lst, lists=False):
     result = []
@@ -299,7 +261,7 @@ def get_ring_names(mol, ring_systems_dict):
     
     return atom_rings, found_rings
 
-def SME(loaded_model, orig_data, reference, scaler=None):
+def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None):
     dataset = setup_dataset(input_data=orig_data, name="SME", reference=reference)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
@@ -344,13 +306,15 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         # temp dataset
     }
 
+    if best_worst_activs:
+        corr_dict, anticorr_dict = best_worst_activs
+
     mol_dict = {}
 
     loaded_model.eval()
-    for batch, (a, b, e, (y, ID)) in enumerate(dataloader):
-        if batch>30: break
+    for batch, (a, b, e, (y, ID)) in tqdm(enumerate(dataloader), total=len(dataloader), desc="Making Mask-dict", file=sys.stdout, mininterval=10.0):
         ID = ID[0]
-        # at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
+        a, b, e = a.to(device), b.to(device), e.to(device)
         if 'ZINC' in ID:
             smile = dataset.smiles[batch]
             ID = smile
@@ -372,8 +336,21 @@ def SME(loaded_model, orig_data, reference, scaler=None):
         # draw_molecule(f"test_plain.png", smiles)
         # draw_molecule(f"test_rings.png", smiles, highlight_atoms=flatten(atominfo), color=(100.0/255.0, 200.0/255.0, 20.0/255.0))
 
-        subgr_at = fg_at + ring_ats
-        subgr_nm = fg_name + ring_names 
+        # get most anti/corr if provided
+        anti_and_corr = []
+        anti_and_corr_ats = []
+        if best_worst_activs:
+            # print('ID:', ID)
+            (c_core_at, c_tensor, c_deg) = corr_dict[ID]
+            (a_core_at, a_tensor, a_deg) = anticorr_dict[ID]
+            corr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=c_core_at, max_degree = c_deg)
+            anticorr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=a_core_at, max_degree = a_deg)
+            anti_and_corr_ats += [corr_ats] + [anticorr_ats]
+            anti_and_corr.append('most_corr')
+            anti_and_corr.append('most_anticorr')
+
+        subgr_at = fg_at + ring_ats + anti_and_corr_ats
+        subgr_nm = fg_name + ring_names + anti_and_corr
         full_subgr_at = all_combinations(subgr_at, lists=True)
         full_subgr_nm = all_combinations(subgr_nm)
         # print("full subgrat", full_subgr_at)
@@ -406,34 +383,62 @@ def SME(loaded_model, orig_data, reference, scaler=None):
     
     return mol_dict
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-data', '--d', type=str, required=True)
-args = parser.parse_args()
-data_name = args.d
-# data_name = 'dock_acease_pruned.txt'
 
-# reference SMILEs/zID
-smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
-smileData.columns = ['smile', 'zinc_id']
-smileData.set_index('zinc_id', inplace=True)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-data', '--d', type=str, required=True)
+    args = parser.parse_args()
+    data_name = args.d
+    # data_name = 'dock_acease_pruned.txt'
 
-# import model
-model_path = find_item_with_keywords('./src/trainingJobs', [args.d, 'model'], dir=False, file=True)
-model_path = model_path[0]
-checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-model = dockingProtocol(params=checkpoint['params'])
-model.load_state_dict(checkpoint['model_state_dict'])
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    print(f"Using {device} device")
 
-print("Data:", data)
-print("Model:", model_path)
+    # reference SMILEs/zID
+    smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
+    smileData.columns = ['smile', 'zinc_id']
+    smileData.set_index('zinc_id', inplace=True)
 
-mol_dict = SME(model, data_name, smileData, checkpoint['scaler'])
-with open('subgr_mask_outdict.pkl', 'wb') as file:
-    pickle.dump(mol_dict, file)
+    # import model
+    model_path = find_item_with_keywords('./src/trainingJobs', [args.d, 'model'], dir=False, file=True)
+    model_path = model_path[0]
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    model = dockingProtocol(params=checkpoint['params'])
+    model.load_state_dict(checkpoint['model_state_dict'])
 
-# print results
-for i,(mol,subgr_dict) in enumerate(mol_dict.items()):
-    if i > 20: break
-    print("Mol: ", mol)
-    for fg,change in subgr_dict.items():
-        print("      ", fg, "-- ",change)
+    # import activation_dicts (optional)
+    most_anticorr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'worst', 'pkl'], dir=False, file=True)
+    most_corr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'best', 'pkl'], dir=False, file=True)
+    print("Most Corr Path:", most_anticorr_path)
+    print("Most Anti Path:", most_corr_path)
+    with open(most_anticorr_path[0], 'rb') as file:
+        most_anticorr_dict = pickle.load(file)
+    with open(most_corr_path[0], 'rb') as file:
+        most_corr_dict = pickle.load(file)
+
+    print("Data:", data_name)
+    print("Model:", model_path)
+    mol_dict = SME(model, data_name, smileData, checkpoint['scaler'], (most_corr_dict, most_anticorr_dict))
+
+    # save results
+    output_dir = os.path.join(os.getcwd(), 'results', data_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    dict_path = os.path.join(output_dir, f'{data_name}_sb_mask_dict.pkl')
+
+    with open(dict_path, 'wb') as file:
+        pickle.dump(mol_dict, file)
+
+    # print results
+    print("------------------\n", len(mol_dict), "mol dict produced.")
+    for i,(mol,subgr_dict) in enumerate(mol_dict.items()):
+        if i > 20: break
+        print("Mol: ", mol)
+        for fg,change in subgr_dict.items():
+            print("      ", fg, "-- ",change)
