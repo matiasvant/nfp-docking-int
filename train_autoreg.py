@@ -84,7 +84,6 @@ class EarlyStopper:
 def remove_edges_above_node_idx(idx,a,b,e):
     # find connections to atoms beyond current specified node/subgraph
     threshold_val = idx
-    replace_value = -1
     mask = e > threshold_val
     indices = torch.nonzero(mask, as_tuple=False)
 
@@ -97,8 +96,8 @@ def remove_edges_above_node_idx(idx,a,b,e):
     # print(f"--Up to {i}th atom--")
     # print(f"Before", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :]) # picks a molecule, shows u its before n after
     # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:])
-    b[mol_idxs, atom_idxs, bond_idxs,:] = none_bond_features
-    e[mask] = replace_value
+    b[mol_idxs, atom_idxs, bond_idxs,:] = none_bond_features # -1 ensures ignored; redundancy
+    e[mask] = -1
     # print("After:", sbgr_e[int(mol_idxs[0]), int(atom_idxs[0]), :])
     # print("Edge feats:", sbgr_b[mol_idxs[0], atom_idxs[0], bond_idxs[0],:]) 
     # print("new e:", sbgr_e)
@@ -132,7 +131,7 @@ def NLL_loss(true, mean, var, visualize=False):
     # # print("var_loss mean:", var_loss)
 
     if visualize:
-        print("Var:", var[0,:].detach())
+        print("Var:", var[0,:5].detach())
         print("log(var):", logvar.mean().item())
         print("true-mean/var:", err.mean().item())
         # print("Final Var loss:", var_loss)
@@ -148,11 +147,27 @@ def check_accuracy(label, pred):
     matching_ratio = matching_rows / total_rows
     return matching_ratio
 
+def b_downsample(data):
+    new_list = []
+    moving_sum = 0
+    len_between = 0
+    for i, elem in enumerate(data):
+      if isinstance(elem, (float,int)):
+        moving_sum += elem
+        len_between += 1
+      if elem == 'B':
+        if len_between != 0:
+            new_list.append(moving_sum/len_between)
+      if elem == 'E':
+        new_list.append('E')
+    return new_list
+
 
 fpl = fplCmd 
 hiddenfeats = [fpl] * 4  # conv layers, of same size as fingeprint (so can map activations to features)
 layers = [num_atom_features(just_structure=True)] + hiddenfeats
 params = {
+    "1var": False,
     "fpl": fpl,
     "conv": {
         "layers": layers
@@ -227,7 +242,7 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 4  # 50
+epochs = 1  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
@@ -235,6 +250,8 @@ trainLoss, validLoss, rsq_list = [], [], []
 mse_loss = nn.MSELoss()
 
 loss = 'MSE'
+edge_pred = True
+node_pred = False
 
 all_loss, all_n_r, all_e_r, all_n_match, all_e_match = [], [], [], [], []
 
@@ -251,7 +268,7 @@ for epoch in range(1, epochs + 1):
     all_e_r.append('E')
     all_e_match.append('E')
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>5: break
+        if batch>2: break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -338,62 +355,65 @@ for epoch in range(1, epochs + 1):
 
             ## Run model on i subgraph 
             # For predicting nodes:  don't include node-to-predict
-            mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
-            # print("Output for node prediction:", mean.shape, var.shape)
-            # print("# atom feats:", num_atom_features(True))
 
-            if loss == 'NLL':
-                node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
-            if loss == 'MSE':
-                node_loss = mse_loss(atom_labels, mean)
-            _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
-
-            # Check prediction accuracy (non-sampled)
-            matching_ratio = check_accuracy(atom_labels, mean)
-            
-            r_list.append(r_value ** 2)
             if i==1:
                 all_loss.append('B')
                 all_n_r.append('B')
                 all_e_r.append('B')
                 all_n_match.append('B')
                 all_e_match.append('B')
-            all_n_r.append(r_value ** 2)
-            all_n_match.append(matching_ratio)
 
-            if i==1 or i==2:
+            node_loss = torch.tensor([0], device=device).float()
+            if node_pred:
+                mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
+
                 if loss == 'NLL':
-                    node_loss = NLL_loss(true=atom_labels, mean=mean, var=var, visualize=True)
-                print("Var:", var[0,:])
-                print(f"Batch {batch} - Subgraph-up-to-{i}:")
-                print(f"True: {atom_labels[0,:5]}, \n Pred: {mean[0,:5]}")
+                    node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
+                if loss == 'MSE':
+                    node_loss = mse_loss(atom_labels, mean)
+                _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
+
+                # Check prediction accuracy (non-sampled)
+                matching_ratio = check_accuracy(atom_labels, mean)
+                
+                r_list.append(r_value ** 2)
+                all_n_r.append(r_value ** 2)
+                all_n_match.append(matching_ratio)
+
+                if i==1 or i==2:
+                    if loss == 'NLL':
+                        node_loss = NLL_loss(true=atom_labels, mean=mean, var=var, visualize=True)
+                        print("Var:", var[0,:5])
+                    print(f"Batch {batch} - Subgraph-up-to-{i}:")
+                    print(f"True: {atom_labels[0,:5]}, \n Pred: {mean[0,:5]}")
 
             edge_loss = torch.tensor([0], device=device).float()
-            # e_r, e_ratio = [], []
-            # for target_atom in range(bond_labels.shape[1]):
-            #     if target_atom > 5: break
-            #     mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
-            #                         pred_node=False, 
-            #                         idx_orig=i+1, idx_dest=target_atom)
-            #     dest_target_bond_features = bond_labels[:,target_atom,:]
-            #     if loss == 'NLL':
-            #         edge_t_loss = NLL_loss(true=dest_target_bond_features.float(), mean=mean.float(), var=var.float())
-            #     if loss == 'MSE':
-            #         edge_t_loss = mse_loss(dest_target_bond_features.float(), mean.float())
+            e_r, e_ratio = [], []
+            if edge_pred:
+                for target_atom in range(bond_labels.shape[1]):
+                    if target_atom > 2: break
+                    mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
+                                        pred_node=False, 
+                                        idx_orig=i+1, idx_dest=target_atom)
+                    dest_target_bond_features = bond_labels[:,target_atom,:]
+                    if loss == 'NLL':
+                        edge_t_loss = NLL_loss(true=dest_target_bond_features.float(), mean=mean.float(), var=var.float())
+                    if loss == 'MSE':
+                        edge_t_loss = mse_loss(dest_target_bond_features.float(), mean.float())
 
-            #     edge_loss = edge_loss + edge_t_loss
-            #     _, _, r_value, _, _= linregress(dest_target_bond_features.detach().numpy().flatten(), mean.detach().numpy().flatten())
-            #     matching_ratio = check_accuracy(dest_target_bond_features, mean)
-            #     e_r.append(r_value ** 2)
-            #     e_ratio.append(matching_ratio)
+                    edge_loss = edge_loss + edge_t_loss
+                    _, _, r_value, _, _= linregress(dest_target_bond_features.detach().numpy().flatten(), mean.detach().numpy().flatten())
+                    matching_ratio = check_accuracy(dest_target_bond_features, mean)
+                    e_r.append(r_value ** 2)
+                    e_ratio.append(matching_ratio)
 
-            edge_loss = edge_loss / bond_labels.shape[1] # weight node/edge preds roughly equally
-            # all_e_match.append(sum(e_ratio)/len(e_ratio))
-            # all_e_r.append(sum(e_r)/len(e_r))
+                edge_loss = edge_loss / bond_labels.shape[1] # weight node/edge preds roughly equally
+                all_e_match.append(sum(e_ratio)/len(e_ratio))
+                all_e_r.append(sum(e_r)/len(e_r))
 
             subgr_loss = node_loss + edge_loss
-            subgr_loss = (subgr_loss*(atom_labels.shape[0]/a.shape[0])) # MSE & NLL implementation weights all equally; as batches get smaller, weight loss lower
             all_loss.append(subgr_loss.item())
+            subgr_loss = (subgr_loss*(atom_labels.shape[0]/a.shape[0])) # MSE & NLL implementation weights all equally; as batches get smaller, weight loss lower
 
             batch_loss = batch_loss + subgr_loss
 
@@ -415,11 +435,12 @@ for epoch in range(1, epochs + 1):
 #         cStop = earlyStop.early_cstop(loss.item())
 #         if cStop: break
     
-    avg_rsq = sum(r_list)/len(r_list)
     print(f"Epoch {epoch} Loss - {epoch_loss}")
-    print(f"Avg R^2: {avg_rsq}. Per subgraph (should be increasing): {r_list}")
     trainLoss.append(epoch_loss)
-    rsq_list.append(avg_rsq)
+    if node_pred: 
+        avg_rsq = sum(r_list)/len(r_list)
+        print(f"Avg R^2: {avg_rsq}. Per subgraph (should be increasing): {r_list}")
+        rsq_list.append(avg_rsq)
 
 #     size = len(validdl.dataset)
 #     num_batches = len(validdl)
@@ -462,18 +483,27 @@ if converged_at != 0:
 else:
     epochR = range(1, epoch + 1)
 
+if params["1var"]:
+    var_t = "1_Var"
+else:
+    var_t = "Var"
+if node_pred and edge_pred: pred_task = "n&e"
+elif node_pred: pred_task = "node"
+elif edge_pred: pred_task = "edge"
 
-model_path = f'AR_{data}_model.pth'
+model_path = f'AR_{data}_model_{var_t}_{loss}_{pred_task}.pth'
 print(f"Saved model at epoch {epoch}.")
 model.save(params, model_path)
 
 ## Loss plot
+print("all loss:", all_loss)
+all_loss = b_downsample(all_loss)
 all_loss_numeric = [x if not isinstance(x,str) else np.nan for x in all_loss]
 preds = np.arange(0, len(all_loss))
 
 print("Preds:", preds.dtype, preds)
 print("All Loss:", all_loss_numeric)
-plt.plot(preds, all_loss_numeric, label='Node Prediction Loss', linestyle='-', color='lightgreen')
+if node_pred: plt.plot(preds, all_loss_numeric, label='Node Prediction Loss', linestyle='-', color='lightgreen')
 
 # mark batch/epoch transitions
 for i, value in enumerate(all_loss):
@@ -488,20 +518,24 @@ plt.ylabel(f'Loss ({loss})')
 
 plt.legend(loc='best')
 num_ticks = 8
-plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
+step = max(1, int(round(len(preds) / num_ticks)))
+plt.xticks(np.arange(0, len(preds), step))
 
-plt.savefig(f'autoreg_loss.png')
+
+plt.savefig(f'autoreg_loss_{loss}_{var_t}_{pred_task}.png')
 plt.show()
 plt.close()
 
 
 ## R plot
+all_n_r = b_downsample(all_n_r)
+all_e_r = b_downsample(all_e_r)
 all_n_r_numeric = [x if not isinstance(x,str) else np.nan for x in all_n_r]
 all_e_r_numeric = [x if not isinstance(x,str) else np.nan for x in all_e_r]
-preds = np.arange(0, len(all_n_r_numeric))
+npreds, epreds = np.arange(0, len(all_n_r_numeric)), np.arange(0, len(all_e_r_numeric))
 
-plt.plot(preds, all_n_r_numeric, label='Node Prediction R^2', linestyle='-', color='blue')
-# plt.plot(preds, all_e_r_numeric, label='Edge Prediction R^2', linestyle='-', color='green')
+if node_pred: plt.plot(npreds, all_n_r_numeric, label='Node Prediction R^2', linestyle='-', color='blue')
+if edge_pred: plt.plot(epreds, all_e_r_numeric, label='Edge Prediction R^2', linestyle='-', color='green')
 
 for i, value in enumerate(all_loss):
     if value == 'B':
@@ -514,25 +548,30 @@ plt.xlabel('Predictions')
 plt.ylabel('R^2')
 
 plt.legend(loc='best')
-plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
-all_n_r_numeric = np.array(all_n_r_numeric)
-all_n_r_numeric = all_n_r_numeric[~np.isnan(all_n_r_numeric)]
-y_min = min(min(all_n_r_numeric), min(all_e_r_numeric))
-y_max = max(max(all_n_r_numeric), max(all_e_r_numeric))
-plt.yticks(np.linspace(y_min, y_max, num_ticks))
+plt.xticks()
+# plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
+plt.yticks(np.linspace(0, 1, num_ticks*5))
 
-plt.savefig(f'autoreg_R^2.png')
+# all_n_r_numeric = np.array(all_n_r_numeric)
+# all_n_r_numeric = all_n_r_numeric[~np.isnan(all_n_r_numeric)]
+# y_min = min(min(all_n_r_numeric), min(all_e_r_numeric))
+# y_max = max(max(all_n_r_numeric), max(all_e_r_numeric))
+# plt.yticks(np.linspace(y_min, y_max, num_ticks))
+
+plt.savefig(f'autoreg_R^2_{loss}_{var_t}_{pred_task}.png')
 plt.show()
 plt.close()
 
 
 ## Match plot
+all_n_match = b_downsample(all_n_match)
+all_e_match = b_downsample(all_e_match)
 all_n_match_numeric = [x if not isinstance(x,str) else np.nan for x in all_n_match]
-all_e_match_numeric = [x if not isinstance(x,str) else np.nan for x in all_n_match]
-preds = np.arange(0, len(all_n_match_numeric))
+all_e_match_numeric = [x if not isinstance(x,str) else np.nan for x in all_e_match]
+nm_preds, em_preds = np.arange(0, len(all_n_match_numeric)), np.arange(0, len(all_e_match_numeric))
 
-plt.plot(preds, all_n_match_numeric, label='Node Prediction Accuracy %', linestyle='-', color='blue')
-# plt.plot(preds, all_e_match_numeric, label='Edge Prediction Accuracy %', linestyle='-', color='green')
+if node_pred: plt.plot(nm_preds, all_n_match_numeric, label='Node Prediction Accuracy %', linestyle='-', color='blue')
+if edge_pred: plt.plot(em_preds, all_e_match_numeric, label='Edge Prediction Accuracy %', linestyle='-', color='green')
 
 for i, value in enumerate(all_loss):
     if value == 'B':
@@ -546,12 +585,10 @@ plt.ylabel('% Accuracy')
 
 plt.legend(loc='best')
 num_ticks = 8
-plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
+plt.xticks()
+# plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
 
-plt.savefig(f'autoreg_match.png')
+plt.savefig(f'autoreg_match_{loss}_{var_t}_{pred_task}.png')
 plt.show()
 plt.close()
-
-plt.close()
-
 
