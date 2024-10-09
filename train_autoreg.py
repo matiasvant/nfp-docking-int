@@ -242,7 +242,7 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 1  # 50
+epochs = 2  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
@@ -268,7 +268,7 @@ for epoch in range(1, epochs + 1):
     all_e_r.append('E')
     all_e_match.append('E')
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>2: break
+        if batch>30: break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -391,7 +391,7 @@ for epoch in range(1, epochs + 1):
             e_r, e_ratio = [], []
             if edge_pred:
                 for target_atom in range(bond_labels.shape[1]):
-                    if target_atom > 2: break
+                    if target_atom > 30: break
                     mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
                                         pred_node=False, 
                                         idx_orig=i+1, idx_dest=target_atom)
@@ -503,7 +503,7 @@ preds = np.arange(0, len(all_loss))
 
 print("Preds:", preds.dtype, preds)
 print("All Loss:", all_loss_numeric)
-if node_pred: plt.plot(preds, all_loss_numeric, label='Node Prediction Loss', linestyle='-', color='lightgreen')
+plt.plot(preds, all_loss_numeric, label='f{pred_task} Prediction Loss', linestyle='-', color='lightgreen')
 
 # mark batch/epoch transitions
 for i, value in enumerate(all_loss):
