@@ -141,7 +141,7 @@ def NLL_loss(true, mean, var, visualize=False):
 def check_accuracy(label, pred):
     """Check quantized feature prediction accuracy (non-sampled) for dequantized label"""
     true_one_hot = np.argmax(label.detach().numpy(), axis=1)
-    pred_one_hot = np.argmax(mean.detach().numpy(), axis=1)
+    pred_one_hot = np.argmax(pred.detach().numpy(), axis=1)
     matching_rows = (true_one_hot == pred_one_hot).sum().item()
     total_rows = len(true_one_hot)
     matching_ratio = matching_rows / total_rows
@@ -242,16 +242,17 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 2  # 50
+epochs = 5  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
 
 mse_loss = nn.MSELoss()
+ce_loss = nn.CrossEntropyLoss()
 
-loss = 'MSE'
-edge_pred = True
-node_pred = False
+loss = 'CE'
+edge_pred = False
+node_pred = True
 
 all_loss, all_n_r, all_e_r, all_n_match, all_e_match = [], [], [], [], []
 
@@ -267,8 +268,13 @@ for epoch in range(1, epochs + 1):
     all_n_match.append('E')
     all_e_r.append('E')
     all_e_match.append('E')
+
+    # if epoch>1:
+    #     for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
+    #         print(f'At-Start-of-Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
+
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>30: break
+        if batch>1: break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -366,32 +372,52 @@ for epoch in range(1, epochs + 1):
             node_loss = torch.tensor([0], device=device).float()
             if node_pred:
                 mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
+                # mean = torch.zeros_like(atom_labels)
+                # mean[:,0] = 1  # compare to 'always guess carbon'
 
                 if loss == 'NLL':
                     node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
                 if loss == 'MSE':
-                    node_loss = mse_loss(atom_labels, mean)
+                    node_loss = mse_loss(atom_labels[:,:43], mean[:,:43])
+                if loss == 'CE':
+                    __, ind_labels = atom_labels[:,:43].max(dim=1)
+                    # if batch==1 and i==1:
+                    #     torch.set_printoptions(threshold=torch.inf)
+                    #     print("Full label vec size:", atom_labels.shape)
+                    #     print("Full label vector - should be (? molecules x 64 features)")
+                    #     print(atom_labels)
+                    #     torch.set_printoptions(threshold=1000)
+
+                    # if (batch%100 == 0) and i == 1:
+                    #     torch.set_printoptions(threshold=torch.inf)
+                    #     print("Ind Labels (max of up to 43rd atom vec):", ind_labels.shape, ind_labels)
+                    #     print("Atom Labels (up to 43)", atom_labels[:,:43].shape, atom_labels[:,:43])
+                    #     torch.set_printoptions(threshold=1000)
+
+                    node_loss = ce_loss(mean[:,:43], ind_labels)
+
                 _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
 
                 # Check prediction accuracy (non-sampled)
-                matching_ratio = check_accuracy(atom_labels, mean)
+                matching_ratio = check_accuracy(atom_labels[:,:43], mean[:,:43]) # compare one-hot atom choices
+                
                 
                 r_list.append(r_value ** 2)
                 all_n_r.append(r_value ** 2)
                 all_n_match.append(matching_ratio)
 
-                if i==1 or i==2:
+                if i==1:
                     if loss == 'NLL':
                         node_loss = NLL_loss(true=atom_labels, mean=mean, var=var, visualize=True)
                         print("Var:", var[0,:5])
                     print(f"Batch {batch} - Subgraph-up-to-{i}:")
-                    print(f"True: {atom_labels[0,:5]}, \n Pred: {mean[0,:5]}")
+                    print(f"True: {atom_labels[0,:]}, \n Pred: {mean[0,:]}")
 
             edge_loss = torch.tensor([0], device=device).float()
             e_r, e_ratio = [], []
             if edge_pred:
                 for target_atom in range(bond_labels.shape[1]):
-                    if target_atom > 30: break
+                    if target_atom > 40: break
                     mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
                                         pred_node=False, 
                                         idx_orig=i+1, idx_dest=target_atom)
@@ -417,14 +443,50 @@ for epoch in range(1, epochs + 1):
 
             batch_loss = batch_loss + subgr_loss
 
-        batch_loss = batch_loss/a.shape[0] # normalize by batchsize
+        batch_loss = 10 * batch_loss/a.shape[0] # normalize by batchsize
         epoch_loss += batch_loss.item()
 
+
         optimizer.zero_grad()
+        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
+        #     print(f'post-zero-grad Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
+
         print(f"Batch {batch} loss: {batch_loss.item()}")
 
-        batch_loss.backward()       
+        batch_loss.backward()
+
+        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
+        #     print(f'post-backward Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
+
+        orig_param_dict = {}
+        updated_param_dict = {}
+        for name, param in model.GCN.named_parameters():
+            if 'bias' in name:
+                print(f"MLP {name} - {param}")
+                print(f"MLP {name} grad - {param.grad}")
+                # orig_param_dict[name] = param.data
+                # if param.grad is None:
+                #     updated_param_dict[name] = param.data
+                # else:
+                #     updated_param_dict[name] = param.data + param.grad.data
+
         optimizer.step()
+
+        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
+        #     print(f'post-step Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
+
+        # if batch%5==0:
+        #     for name, param in model.GCN.named_parameters():
+        #         if (torch.allclose(param.data, orig_param_dict[name], rtol=.2, atol=.1)) and not (torch.allclose(param.data, updated_param_dict[name], rtol=.2, atol=.1)):
+        #             print(f"{name} (incorrectly) stayed the same")
+        #         elif (torch.allclose(param.data, updated_param_dict[name], rtol=.1, atol=.01)):
+        #             print(f"{name} was correctly updated")
+        #         else:
+        #             print(f"{name} was updated, but didn't match my math")
+
+        # if epoch == 1:
+        #     print("Model structure:\n", model)
+
 
     # if (epoch==1):
     #     print("Last Weights in Epoch 1:")
@@ -503,7 +565,7 @@ preds = np.arange(0, len(all_loss))
 
 print("Preds:", preds.dtype, preds)
 print("All Loss:", all_loss_numeric)
-plt.plot(preds, all_loss_numeric, label='f{pred_task} Prediction Loss', linestyle='-', color='lightgreen')
+plt.plot(preds, all_loss_numeric, label=f'{pred_task} Prediction Loss', linestyle='-', color='lightgreen')
 
 # mark batch/epoch transitions
 for i, value in enumerate(all_loss):
@@ -550,7 +612,7 @@ plt.ylabel('R^2')
 plt.legend(loc='best')
 plt.xticks()
 # plt.xticks(np.arange(0, len(preds), int(round(len(preds)/num_ticks))))
-plt.yticks(np.linspace(0, 1, num_ticks*5))
+plt.yticks(np.linspace(0, 1, 8))
 
 # all_n_r_numeric = np.array(all_n_r_numeric)
 # all_n_r_numeric = all_n_r_numeric[~np.isnan(all_n_r_numeric)]

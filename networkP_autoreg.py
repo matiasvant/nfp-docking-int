@@ -105,6 +105,7 @@ class MLP(nn.Module):
             self.mlp.add_module(f'final relu', nn.ReLU()) # [0,x) labels
         if out_type == 'softplus':
             self.mlp.add_module(f'final softplus', nn.Softplus())
+        print("Built an MLP")
 
  
     def forward(self, embeddings):
@@ -115,13 +116,14 @@ class MLP(nn.Module):
 
 
 class GaussianMLPs(nn.Module):
-    def __init__(self, dropout=.1, 
+    def __init__(self, one_var=False, dropout=.1, 
                 ba=[1, 1]): # two fully connected layers
         super(GaussianMLPs, self).__init__()
         self.dropout = dropout
         self.ba = ba
         self.mean_mlp = None
         self.var_mlp = None
+        self.one_var = one_var
     
     def buildMLPs(self, i, o):
         self.mean_mlp = MLP(i, o, self.dropout, self.ba)
@@ -133,7 +135,11 @@ class GaussianMLPs(nn.Module):
         if self.mean_mlp is None or self.var_mlp is None:
             self.buildMLPs(i, o)
         mean = self.mean_mlp(embeds)
-        var = self.var_mlp(embeds)
+
+        if self.one_var:
+            var = torch.ones(mean.shape)
+        else:
+            var = self.var_mlp(embeds)
 
         return mean, var
 
@@ -154,8 +160,8 @@ class GCN_Autoreg(nn.Module):
                 layers=params["conv"]["layers"],
                 fpl=params["fpl"],
             )
-        self.Node_Pred = GaussianMLPs()  # dropout=params later
-        self.Edge_Pred = GaussianMLPs()
+        self.Node_Pred = GaussianMLPs(params["1var"])  # dropout=params later
+        self.Edge_Pred = GaussianMLPs(params["1var"])
         self.to(device)
 
     def forward(self, a_b_e_input, pred_node=True, idx_orig=None, idx_dest=None):
@@ -163,9 +169,12 @@ class GCN_Autoreg(nn.Module):
         if pred_node:
             subgr_embeds = self.GCN(a_b_e_input)
             n_feats = num_atom_features(just_structure=True)
+
+            # Temp, check predictions w/o information
+            # subgr_embeds = torch.from_numpy(np.random.randint(0, 10, size=subgr_embeds.shape).astype(np.float32))
+            # subgr_embeds = torch.zeros(subgr_embeds.shape)
+
             mean, var = self.Node_Pred(subgr_embeds, n_feats)
-            var = torch.ones(mean.shape)
-            # self.Node_Pred.print_weights("Node Mean Weight") 
         
         else: # predict edge/bond between two arbitrary nodes
             subgr_embeds, [orig_embed, dest_embed] = self.GCN(a_b_e_input, [idx_orig, idx_dest])
