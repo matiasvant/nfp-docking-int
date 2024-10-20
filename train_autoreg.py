@@ -242,7 +242,7 @@ num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 5  # 50
+epochs = 10  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
@@ -251,7 +251,7 @@ mse_loss = nn.MSELoss()
 ce_loss = nn.CrossEntropyLoss()
 
 loss = 'CE'
-edge_pred = False
+edge_pred = True
 node_pred = True
 
 all_loss, all_n_r, all_e_r, all_n_match, all_e_match = [], [], [], [], []
@@ -274,7 +274,7 @@ for epoch in range(1, epochs + 1):
     #         print(f'At-Start-of-Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
 
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>1: break
+        # if batch>200: break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -284,10 +284,6 @@ for epoch in range(1, epochs + 1):
         for i in range(1, max_atoms-1): # consider 'up-to-atom-i' subgraph for all molecules at each step
             ## For every molecule/graph, get the node labels of i+1, the 'node to predict'
             atom_labels = a[:,i+1,:]
-
-            # if i==0 or i%10==0:
-            #     torch.set_printoptions(threshold=torch.inf)
-            #     print(f"Atom {i+1} label features (c,n,... + implict hydrogens):", atom_labels)
 
             ## Get every molecules edge labels of node i+1 *to within current subgraph* (do not include edges to i+2,...)
             sbgr_a_i_plus_1 = a[:,:i+2,:]
@@ -344,7 +340,7 @@ for epoch in range(1, epochs + 1):
             bond_labels = bond_labels[:,:,1:] # remove 'vector idx layer', leaving only bond feats
             bond_labels = torch.from_numpy(bond_labels)
 
-            # Final Edge Output: [mols x destination atoms x bond feats]. If there's no bond, then the bond feats will reflect that
+            # Final Edge Output: [mols x destination atoms x one-hot bond feats]. No-bond is an option
             
             ## Dequantize labels
             nd_a = atom_labels
@@ -371,7 +367,7 @@ for epoch in range(1, epochs + 1):
 
             node_loss = torch.tensor([0], device=device).float()
             if node_pred:
-                mean, var = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
+                mean = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
                 # mean = torch.zeros_like(atom_labels)
                 # mean[:,0] = 1  # compare to 'always guess carbon'
 
@@ -380,23 +376,11 @@ for epoch in range(1, epochs + 1):
                 if loss == 'MSE':
                     node_loss = mse_loss(atom_labels[:,:43], mean[:,:43])
                 if loss == 'CE':
-                    __, ind_labels = atom_labels[:,:43].max(dim=1)
-                    # if batch==1 and i==1:
-                    #     torch.set_printoptions(threshold=torch.inf)
-                    #     print("Full label vec size:", atom_labels.shape)
-                    #     print("Full label vector - should be (? molecules x 64 features)")
-                    #     print(atom_labels)
-                    #     torch.set_printoptions(threshold=1000)
-
-                    # if (batch%100 == 0) and i == 1:
-                    #     torch.set_printoptions(threshold=torch.inf)
-                    #     print("Ind Labels (max of up to 43rd atom vec):", ind_labels.shape, ind_labels)
-                    #     print("Atom Labels (up to 43)", atom_labels[:,:43].shape, atom_labels[:,:43])
-                    #     torch.set_printoptions(threshold=1000)
-
+                    __, ind_labels = atom_labels[:,:43].max(dim=1) # reduce to one-hot label
                     node_loss = ce_loss(mean[:,:43], ind_labels)
 
-                _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
+                # _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
+                r_value=1
 
                 # Check prediction accuracy (non-sampled)
                 matching_ratio = check_accuracy(atom_labels[:,:43], mean[:,:43]) # compare one-hot atom choices
@@ -411,25 +395,40 @@ for epoch in range(1, epochs + 1):
                         node_loss = NLL_loss(true=atom_labels, mean=mean, var=var, visualize=True)
                         print("Var:", var[0,:5])
                     print(f"Batch {batch} - Subgraph-up-to-{i}:")
-                    print(f"True: {atom_labels[0,:]}, \n Pred: {mean[0,:]}")
+                    print(f"True: {atom_labels[0,:10]}, \n Pred: {mean[0,:10]}")
 
             edge_loss = torch.tensor([0], device=device).float()
             e_r, e_ratio = [], []
             if edge_pred:
                 for target_atom in range(bond_labels.shape[1]):
-                    if target_atom > 40: break
-                    mean, var = model((sbgr_a,sbgr_b,sbgr_e), 
+                    if target_atom > 5: break
+
+                    # edge-pred easier, train on a small portion of batch to save compute
+                    batch_subset = 5
+                    
+                    pred = model((sbgr_a[:batch_subset,:,:],sbgr_b[:batch_subset,:,:,:],sbgr_e[:batch_subset,:,:]), 
                                         pred_node=False, 
                                         idx_orig=i+1, idx_dest=target_atom)
-                    dest_target_bond_features = bond_labels[:,target_atom,:]
+                    dest_target_bond_features = bond_labels[:batch_subset,target_atom,:]
                     if loss == 'NLL':
-                        edge_t_loss = NLL_loss(true=dest_target_bond_features.float(), mean=mean.float(), var=var.float())
+                        edge_t_loss = NLL_loss(true=dest_target_bond_features.float(), mean=pred.float(), var=var.float())
                     if loss == 'MSE':
-                        edge_t_loss = mse_loss(dest_target_bond_features.float(), mean.float())
+                        edge_t_loss = mse_loss(dest_target_bond_features.float(), pred.float())
+                    if loss == 'CE':
+                        __, ind_labels = dest_target_bond_features.max(dim=1)
+                        edge_t_loss = ce_loss(pred, ind_labels)
+
+                        if (batch%20) and (i==1 or i==20):
+                            print(f"-- Target Atom {target_atom}, Batch {batch} Atom {i} --")
+                            # print("Bond feats (64 x 4):", dest_target_bond_features[:5,:])
+                            print("Labels:", ind_labels[:5])
+                            print("Preds:", pred[:5].max(dim=1).indices)
+    
 
                     edge_loss = edge_loss + edge_t_loss
-                    _, _, r_value, _, _= linregress(dest_target_bond_features.detach().numpy().flatten(), mean.detach().numpy().flatten())
-                    matching_ratio = check_accuracy(dest_target_bond_features, mean)
+                    # _, _, r_value, _, _= linregress(dest_target_bond_features.detach().numpy().flatten(), mean.detach().numpy().flatten())
+                    r_value = 1
+                    matching_ratio = check_accuracy(dest_target_bond_features[:batch_subset,:], pred)
                     e_r.append(r_value ** 2)
                     e_ratio.append(matching_ratio)
 
@@ -439,7 +438,7 @@ for epoch in range(1, epochs + 1):
 
             subgr_loss = node_loss + edge_loss
             all_loss.append(subgr_loss.item())
-            subgr_loss = (subgr_loss*(atom_labels.shape[0]/a.shape[0])) # MSE & NLL implementation weights all equally; as batches get smaller, weight loss lower
+            subgr_loss = (subgr_loss*(atom_labels.shape[0]/a.shape[0])) # CE,MSE,NLL implementation weights all equally; as batches get smaller, weight loss lower
 
             batch_loss = batch_loss + subgr_loss
 
@@ -448,55 +447,12 @@ for epoch in range(1, epochs + 1):
 
 
         optimizer.zero_grad()
-        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
-        #     print(f'post-zero-grad Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
-
         print(f"Batch {batch} loss: {batch_loss.item()}")
-
         batch_loss.backward()
-
-        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
-        #     print(f'post-backward Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
-
-        orig_param_dict = {}
-        updated_param_dict = {}
-        for name, param in model.GCN.named_parameters():
-            if 'bias' in name:
-                print(f"MLP {name} - {param}")
-                print(f"MLP {name} grad - {param.grad}")
-                # orig_param_dict[name] = param.data
-                # if param.grad is None:
-                #     updated_param_dict[name] = param.data
-                # else:
-                #     updated_param_dict[name] = param.data + param.grad.data
 
         optimizer.step()
 
-        # for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
-        #     print(f'post-step Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
 
-        # if batch%5==0:
-        #     for name, param in model.GCN.named_parameters():
-        #         if (torch.allclose(param.data, orig_param_dict[name], rtol=.2, atol=.1)) and not (torch.allclose(param.data, updated_param_dict[name], rtol=.2, atol=.1)):
-        #             print(f"{name} (incorrectly) stayed the same")
-        #         elif (torch.allclose(param.data, updated_param_dict[name], rtol=.1, atol=.01)):
-        #             print(f"{name} was correctly updated")
-        #         else:
-        #             print(f"{name} was updated, but didn't match my math")
-
-        # if epoch == 1:
-        #     print("Model structure:\n", model)
-
-
-    # if (epoch==1):
-    #     print("Last Weights in Epoch 1:")
-    #     for name, param in model.named_parameters():
-    #         if param.requires_grad:
-    #             print(name, param.data)
-
-#         cStop = earlyStop.early_cstop(loss.item())
-#         if cStop: break
-    
     print(f"Epoch {epoch} Loss - {epoch_loss}")
     trainLoss.append(epoch_loss)
     if node_pred: 

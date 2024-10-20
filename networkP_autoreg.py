@@ -55,8 +55,10 @@ class GCN(nn.Module):
             outputArr.append(nfpOutput(self.layers[idx], self.fpl))
             layersArr.append(nfpConv(i, o, just_structure=True))
         outputArr.append(nfpOutput(self.layers[-1], self.fpl))
+        # print("FPL when initing:", self.fpl)
+        # print("Layers Arr:", nn.ModuleList(layersArr))
+        # print("Output Arr:", nn.ModuleList(outputArr))
         return nn.ModuleList(layersArr), nn.ModuleList(outputArr)
-            
     
     def forward(self, input, idx_list=None):
         a, b, e = input
@@ -91,65 +93,26 @@ class MLP(nn.Module):
         self.mlp = nn.Sequential()
         self.buildModel(self.i,self.o, out_type)
     
-    def buildModel(self, in_size, out_size, out_type):
+    def buildModel(self, in_size, out_size, out_type='None'):
         self.ba = [int(round(l * in_size)) for l in self.ba] # make layers porportional to input size
         self.arch = [(in_size, self.ba[0])] + list(zip(self.ba[:-1], self.ba[1:])) + [(self.ba[-1], out_size)] 
         for j, (i, o) in enumerate(self.arch):
             # print(f"Lay {j}: {i}->{o}")
             self.mlp.add_module(f'relu act {j}', nn.ReLU())
-            self.mlp.add_module(f'layer norm {j}', nn.LayerNorm(i)) #since batch size drops
+            self.mlp.add_module(f'layer norm {j}', nn.LayerNorm(i)) #since batch size drops as molecules are completed
             self.mlp.add_module(f'dropout {j}', nn.Dropout(self.dropout))
             self.mlp.add_module(f'linear {j}', nn.Linear(i, o))
             nn.init.constant_(self.mlp[-1].bias, .03)
         if out_type == 'ReLU':
-            self.mlp.add_module(f'final relu', nn.ReLU()) # [0,x) labels
+            self.mlp.add_module(f'final relu', nn.ReLU())
         if out_type == 'softplus':
             self.mlp.add_module(f'final softplus', nn.Softplus())
-        print("Built an MLP")
-
  
     def forward(self, embeddings):
         i_size = embeddings.shape[1]
         if self.arch is None:
             self.buildModel(i_size, self.o_size)
         return self.mlp(embeddings)
-
-
-class GaussianMLPs(nn.Module):
-    def __init__(self, one_var=False, dropout=.1, 
-                ba=[1, 1]): # two fully connected layers
-        super(GaussianMLPs, self).__init__()
-        self.dropout = dropout
-        self.ba = ba
-        self.mean_mlp = None
-        self.var_mlp = None
-        self.one_var = one_var
-    
-    def buildMLPs(self, i, o):
-        self.mean_mlp = MLP(i, o, self.dropout, self.ba)
-        self.var_mlp = MLP(i, o, self.dropout, self.ba, out_type='softplus') # var shouldn't be 0
-
-    def forward(self, embeds, label_size):
-        i = embeds.shape[1]
-        o = label_size
-        if self.mean_mlp is None or self.var_mlp is None:
-            self.buildMLPs(i, o)
-        mean = self.mean_mlp(embeds)
-
-        if self.one_var:
-            var = torch.ones(mean.shape)
-        else:
-            var = self.var_mlp(embeds)
-
-        return mean, var
-
-    def print_weights(self, label):
-        for name, param in self.mean_mlp.mlp.named_parameters():
-            if 'weight' in name and 'linear' in name:
-                print(f"{label} {name}: {param.shape}")
-                if torch.all(param == -1):
-                    print("Weights reset to -1.")
-                    break
 
     
 class GCN_Autoreg(nn.Module):
@@ -158,10 +121,10 @@ class GCN_Autoreg(nn.Module):
         self.node_toggle = True
         self.GCN = GCN(
                 layers=params["conv"]["layers"],
-                fpl=params["fpl"],
+                fpl= params["fpl"]
             )
-        self.Node_Pred = GaussianMLPs(params["1var"])  # dropout=params later
-        self.Edge_Pred = GaussianMLPs(params["1var"])
+        self.Node_Pred = MLP(in_size=64, out_size=43, dropout=.2, ba=[1,1])
+        self.Edge_Pred = MLP(in_size=192, out_size=4, dropout=.2, ba=[1,1])
         self.to(device)
 
     def forward(self, a_b_e_input, pred_node=True, idx_orig=None, idx_dest=None):
@@ -170,26 +133,16 @@ class GCN_Autoreg(nn.Module):
             subgr_embeds = self.GCN(a_b_e_input)
             n_feats = num_atom_features(just_structure=True)
 
-            # Temp, check predictions w/o information
-            # subgr_embeds = torch.from_numpy(np.random.randint(0, 10, size=subgr_embeds.shape).astype(np.float32))
-            # subgr_embeds = torch.zeros(subgr_embeds.shape)
-
-            mean, var = self.Node_Pred(subgr_embeds, n_feats)
+            pred = self.Node_Pred(subgr_embeds)
         
         else: # predict edge/bond between two arbitrary nodes
             subgr_embeds, [orig_embed, dest_embed] = self.GCN(a_b_e_input, [idx_orig, idx_dest])
 
-            # print("orig Embed shaped:", orig_embed.shape)
-            # print("dest Embed shaped:", dest_embed.shape)
-
             combined = torch.cat((subgr_embeds, orig_embed, dest_embed), axis=1)
-            # print("combined shaped:", combined.shape)
-
             n_feats = num_bond_features(just_structure=True)
-            mean, var = self.Edge_Pred(combined, n_feats)
-            # self.Edge_Pred.print_weights("Edge Mean Weight")
+            pred = self.Edge_Pred(combined)
         
-        return mean, var
+        return pred
     
     def save(self, params, outpath):
         torch.save({
