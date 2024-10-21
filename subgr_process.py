@@ -65,14 +65,14 @@ def plot_lone_gr_vals(mask_dict, out_path, optimize_for_high=True, highlight_gro
     else:
         flip_factor = 1
 
-    print("Optimized for high:", optimize_for_high)
+    # print("Optimized for high:", optimize_for_high)
     filtered_data = {group: data['sum'] / data['count'] * flip_factor
                     for group, data in lone_group_dict.items() if data['count'] >= threshold}
-    print("filtered data", filtered_data)
+    # print("filtered data", filtered_data)
     sorted_groups = sorted(filtered_data, key=filtered_data.get)
     sorted_changes = [filtered_data[group] for group in sorted_groups]
-    print("sorted groups", len(sorted_groups), sorted_groups)
-    print("sorted changes", len(sorted_changes), sorted_changes)
+    # print("sorted groups", len(sorted_groups), sorted_groups)
+    # print("sorted changes", len(sorted_changes), sorted_changes)
 
     # Plot, highlight groups
     plt.figure(figsize=(12, 8))
@@ -81,6 +81,8 @@ def plot_lone_gr_vals(mask_dict, out_path, optimize_for_high=True, highlight_gro
         colors = plt.get_cmap('tab10').colors
         color_map = {group: colors[i % len(colors)] for i, group in enumerate(highlight_groups)}
         bar_colors = [color_map.get(group, 'grey') for group in sorted_groups]
+        sorted_changes = [x.cpu().detach().numpy() for x in sorted_changes]
+        print(sorted_changes)
         bars = plt.bar(sorted_groups, sorted_changes, color=bar_colors)
     else:
         bars = plt.bar(sorted_groups, sorted_changes, color='grey')
@@ -89,7 +91,7 @@ def plot_lone_gr_vals(mask_dict, out_path, optimize_for_high=True, highlight_gro
     if highlight_groups:
         handles = [plt.Line2D([0], [0], color=color, lw=4) for group, color in color_map.items()]
         plt.legend(handles, highlight_groups, title='Highlighted Groups')
-
+    plt.xticks(rotation=45)
     plt.savefig(out_path)
 
 
@@ -103,13 +105,14 @@ if __name__ == "__main__":
     ## Import saved activations
     data_path = find_item_with_keywords('./data', [data_name], dir=False, file=True)
     mask_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'mask', 'pkl'], dir=False, file=True)
-    most_anticorr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'worst', 'pkl'], dir=False, file=True)
-    most_corr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'best', 'pkl'], dir=False, file=True)
+    # most_anticorr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'worst', 'pkl'], dir=False, file=True)
+    # most_corr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'best', 'pkl'], dir=False, file=True)
     print("Using -- \n Data:", data_name, data_path)
     print("Mask dict:", mask_path)
-    print("Most Corr Path:", most_corr_path)
-    print("Most Anti-corr Path:", most_anticorr_path)
-    data_path, mask_path, most_anticorr_path, most_corr_path = data_path[0], mask_path[0], most_anticorr_path[0], most_corr_path[0]
+    # print("Most Corr Path:", most_corr_path)
+    # print("Most Anti-corr Path:", most_anticorr_path)
+    # data_path, mask_path, most_anticorr_path, most_corr_path = data_path[0], mask_path[0], most_anticorr_path[0], most_corr_path[0]
+    data_path, mask_path = data_path[0], mask_path[0]
 
     # with open(most_anticorr_path, 'rb') as file:
     #     most_anticorr_dict = pickle.load(file)

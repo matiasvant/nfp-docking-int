@@ -272,3 +272,27 @@ class dockingProtocol(nn.Module):
             'dataset': dataset,
             'scaler': scaler
         }, outpath)
+
+class EnsembleReg(nn.Module):   
+    def __init__(self, n_m, *argv):
+        super().__init__()
+        self.models = []
+        self.n_m = n_m
+        for arg in argv:
+            self.models.append(arg)
+        self.classifier = nn.Linear(n_m, 1)
+        
+    def forward(self, x):
+        x_n = self.models[0](x)[:, None]
+        for model in self.models[1:]:
+            x_m = model(x)
+            x_n = torch.cat((x_n, x_m[:, None]), dim=1)
+        out = self.classifier(x_n)
+        return out.squeeze(1)
+    
+    def save(self, params, dataset, outpath, scaler=None):
+        torch.save({
+            'model_state_dict': self.state_dict(),
+            'params': params,
+            'dataset': dataset,
+        }, outpath)

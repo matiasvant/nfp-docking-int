@@ -96,7 +96,7 @@ def find_item_with_keywords(search_dir, keywords: List[str], dir=False, file=Fal
 class dockingDataset(Dataset):
     def __init__(self, train, labels, 
     maxa=70, maxd=6, # 6 bond hard cap; 70 atom soft limit
-    name='unknown', just_structure=False, atom_masks=None):
+    name='unknown', just_structure=False, atom_masks=None, just_smiles=False):
         # self.train = (zid, smile), self.label = (bin label)
         self.train = train
         self.labels = T.from_numpy(np.array(labels)).float()
@@ -104,7 +104,7 @@ class dockingDataset(Dataset):
         self.maxD = maxd
         smiles = [x[1] for x in self.train]
         self.a, self.b, self.e = buildFeats(smiles, self.maxD, self.maxA, name, just_structure, atom_masks)
-        self.zinc_ids = [x[0] for x in self.train]
+        self.zinc_ids = [x[1] for x in self.train]
         self.smiles = [x[1] for x in self.train]
 
     def __len__(self):
