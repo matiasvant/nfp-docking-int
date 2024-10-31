@@ -139,7 +139,7 @@ def NLL_loss(true, mean, var, visualize=False):
     return err_loss
 
 def check_accuracy(label, pred):
-    """Check quantized feature prediction accuracy (non-sampled) for dequantized label"""
+    """Check quantized feature prediction accuracy (non-sampled) for feat label & logits"""
     true_one_hot = np.argmax(label.detach().numpy(), axis=1)
     pred_one_hot = np.argmax(pred.detach().numpy(), axis=1)
     matching_rows = (true_one_hot == pred_one_hot).sum().item()
@@ -236,13 +236,15 @@ print("Model structure:\n", model)
 # print(f'total trainable params: {totalParams}')
 
 # # adam, lr=0.01, weight_decay=0.001, prop=0.2, dropout=0.2
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+lr = .05
+weight_decay=0.0001
+optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd, betas=(0.65, 0.70))
 lendl = len(trainds)
 num_batches = len(traindl)
 print("Num batches:", num_batches)
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 10  # 50
+epochs = 20  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
@@ -251,8 +253,8 @@ mse_loss = nn.MSELoss()
 ce_loss = nn.CrossEntropyLoss()
 
 loss = 'CE'
-edge_pred = True
 node_pred = True
+edge_pred = False
 
 all_loss, all_n_r, all_e_r, all_n_match, all_e_match = [], [], [], [], []
 
@@ -274,7 +276,7 @@ for epoch in range(1, epochs + 1):
     #         print(f'At-Start-of-Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
 
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        # if batch>200: break
+        if batch>2: break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -340,8 +342,8 @@ for epoch in range(1, epochs + 1):
             bond_labels = bond_labels[:,:,1:] # remove 'vector idx layer', leaving only bond feats
             bond_labels = torch.from_numpy(bond_labels)
 
-            # Final Edge Output: [mols x destination atoms x one-hot bond feats]. No-bond is an option
-            
+            # Final E: [mols x destination atoms x pointers to bonded atoms]. Ex: [1,5,-1,-1,-1] 
+        
             ## Dequantize labels
             nd_a = atom_labels
 
@@ -366,25 +368,32 @@ for epoch in range(1, epochs + 1):
                 all_e_match.append('B')
 
             node_loss = torch.tensor([0], device=device).float()
+
+            ## Undersample C (v. common class)
+            threshold = .35 # % odds of keeping C example 
+            notC_mask = atom_labels[:,0] == 0
+            rand_keep = torch.rand(notC_mask.size())
+            rand_keep = threshold > rand_keep
+            notC_mask = notC_mask | rand_keep
+
+            atom_labels = atom_labels[notC_mask]
+            if atom_labels.shape[0] == 0: break 
+            sbgr_a = sbgr_a[notC_mask, :, :]
+            sbgr_b = sbgr_b[notC_mask, :, :, :]
+            sbgr_e = sbgr_e[notC_mask, :, :]
+            
             if node_pred:
                 mean = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
-                # mean = torch.zeros_like(atom_labels)
-                # mean[:,0] = 1  # compare to 'always guess carbon'
 
-                if loss == 'NLL':
-                    node_loss = NLL_loss(true=atom_labels, mean=mean, var=var)
-                if loss == 'MSE':
-                    node_loss = mse_loss(atom_labels[:,:43], mean[:,:43])
                 if loss == 'CE':
                     __, ind_labels = atom_labels[:,:43].max(dim=1) # reduce to one-hot label
-                    node_loss = ce_loss(mean[:,:43], ind_labels)
+                    node_loss = ce_loss(mean, ind_labels)
 
                 # _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
                 r_value=1
 
                 # Check prediction accuracy (non-sampled)
                 matching_ratio = check_accuracy(atom_labels[:,:43], mean[:,:43]) # compare one-hot atom choices
-                
                 
                 r_list.append(r_value ** 2)
                 all_n_r.append(r_value ** 2)
@@ -397,23 +406,25 @@ for epoch in range(1, epochs + 1):
                     print(f"Batch {batch} - Subgraph-up-to-{i}:")
                     print(f"True: {atom_labels[0,:10]}, \n Pred: {mean[0,:10]}")
 
+
+            # print("Subgr B SHAPE:", sbgr_b.shape)
+            # print("Subgr B SHAPE[0,0,:,:]", sbgr_b[0,0,:,:])
+            # print("Subgr E[0,0,:]", sbgr_e[0,0,:])
+            # first mol, first target atom; slots x feats 
+
             edge_loss = torch.tensor([0], device=device).float()
             e_r, e_ratio = [], []
             if edge_pred:
-                for target_atom in range(bond_labels.shape[1]):
-                    if target_atom > 5: break
+                # edge-pred easier task, train on a small portion of batch
+                batch_subset = 3
+                sample_range = range(0, bond_labels.shape[1], 1)
 
-                    # edge-pred easier, train on a small portion of batch to save compute
-                    batch_subset = 5
-                    
+                for target_atom in sample_range:
                     pred = model((sbgr_a[:batch_subset,:,:],sbgr_b[:batch_subset,:,:,:],sbgr_e[:batch_subset,:,:]), 
                                         pred_node=False, 
                                         idx_orig=i+1, idx_dest=target_atom)
                     dest_target_bond_features = bond_labels[:batch_subset,target_atom,:]
-                    if loss == 'NLL':
-                        edge_t_loss = NLL_loss(true=dest_target_bond_features.float(), mean=pred.float(), var=var.float())
-                    if loss == 'MSE':
-                        edge_t_loss = mse_loss(dest_target_bond_features.float(), pred.float())
+
                     if loss == 'CE':
                         __, ind_labels = dest_target_bond_features.max(dim=1)
                         edge_t_loss = ce_loss(pred, ind_labels)
@@ -506,7 +517,7 @@ if params["1var"]:
 else:
     var_t = "Var"
 if node_pred and edge_pred: pred_task = "n&e"
-elif node_pred: pred_task = "node"
+elif node_pred: pred_task = "LABEL_PEEP"
 elif edge_pred: pred_task = "edge"
 
 model_path = f'AR_{data}_model_{var_t}_{loss}_{pred_task}.pth'
