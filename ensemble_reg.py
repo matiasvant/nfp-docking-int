@@ -12,39 +12,11 @@ import random
 from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_matrix, average_precision_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 import sys
-from networkP import dockingProtocol
+from networkP import dockingProtocol, EnsembleReg
 from util import *
 import time
 from scipy.stats import linregress
 from sklearn.preprocessing import StandardScaler
-
-parser = argparse.ArgumentParser()
-
-parser = argparse.ArgumentParser()
-parser.add_argument('-dropout','--df',required=True)
-parser.add_argument('-learn_rate','--lr',required=True)
-parser.add_argument('-os','--os',required=True)
-parser.add_argument('-data', '--dat', required=True)
-parser.add_argument('-bs', '--batch_size', required=True)
-parser.add_argument('-fplen', '--fplength', required=True)
-parser.add_argument('-mnum', '--model_number', required=True)
-parser.add_argument('-wd', '--weight_decay', required=True)
-parser.add_argument('-ba', '--bin_array', required=True)
-
-cmdlArgs = parser.parse_args()
-df=float(cmdlArgs.df)
-lr=float(cmdlArgs.lr)
-oss=int(cmdlArgs.os)
-wd=float(cmdlArgs.weight_decay)
-bs=int(cmdlArgs.batch_size)
-data = cmdlArgs.dat
-fplCmd = int(cmdlArgs.fplength)
-mn = cmdlArgs.model_number
-ba = cmdlArgs.bin_array
-ba = [fplCmd] + list(map(lambda x: int(fplCmd / x), list(map(int, ba.split(","))))) + [1]
-print(ba)
-
-print(f'interop threads: {torch.get_num_interop_threads()}, intraop threads: {torch.get_num_threads()}')
 
 device = (
     "cuda"
@@ -53,7 +25,12 @@ device = (
     if torch.backends.mps.is_available()
     else "cpu"
 )
-print(f"Using {device} device")
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-n', '--num_models', required=True)
+
+ioargs = parser.parse_args()
+nm = int(ioargs.num_models)
 
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0):
@@ -86,11 +63,12 @@ class EarlyStopper:
 
 
 # 70-15-15 split
-smileData = pd.read_csv('../../data/smilesDS.smi', delimiter=' ')
+smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
 smileData.columns = ['smiles', 'zinc_id']
 smileData.set_index('zinc_id', inplace=True)
 
-data_path = f'../../data/{data}.txt'
+data = 'sol_data_ESOL'
+data_path = f'./data/{data}.txt'
 allData = labelsToDF(data_path)
 if 'smiles' not in allData.columns:
     allData = pd.merge(allData, smileData, on='zinc_id')
@@ -110,20 +88,13 @@ yTest = testData['labels'].values
 xValid = valData[[ID_column, 'smiles']].values.tolist()
 yValid = valData['labels'].values
 
-print(f"xTrain: {xTrain[:5]}")
-print(f"yTrain: {yTrain[:5]}")
-
 scaler = StandardScaler()
 yTrain = yTrain.reshape(-1, 1)
-print(type(yTrain))
 yTrain = scaler.fit_transform(yTrain).T[0].tolist()  
 yTest = scaler.transform(yTest.reshape(-1, 1)).T[0].tolist()  # reuse scaling from train data to avoid data leakage
 yValid = scaler.transform(yValid.reshape(-1, 1)).T[0].tolist()
 
-print(f"scaled yTrain: {yTrain[:5]}")
-print(f"scaled yTest: {yTest[:5]}")
-
-
+bs = 256
 trainds = dockingDataset(train=xTrain, 
                         labels=yTrain,
                         name='train')
@@ -137,43 +108,38 @@ validds = dockingDataset(train=xValid,
                          name='valid')
 validdl = DataLoader(validds, batch_size=bs, shuffle=True)
 
-res_path = f'./../model{mn}'
+res_path = f'./src/ensemble'
 print(res_path)
 try:
-    os.mkdir(f'./../model{mn}')
+    os.mkdir(f'./src/ensemble')
 except:
     print("error in creating res dir")
 
+models = []
+for m in range(nm):    
+    checkpoint = torch.load(f"src/model{m+1}/r_sol_data_ESOL_model.pth")
+    model = dockingProtocol(params=checkpoint['params']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    models.append(model)
+ensemble = EnsembleReg(nm, *models) 
 
-fpl = fplCmd 
-hiddenfeats = [fpl] * 4  # conv layers, of same size as fingeprint (so can map activations to features)
-layers = [num_atom_features()] + hiddenfeats
+for param in ensemble.parameters():
+    param.requires_grad = False
+
+for param in ensemble.classifier.parameters():
+    param.requires_grad = True    
+
+model = ensemble.to(device)
 modelParams = {
-    "fpl": fpl,
-    "activation": 'regression',
-    "conv": {
-        "layers": layers
-    },
-    "ann": {
-        "layers": layers,
-        "ba": ba,
-        "dropout": df
-    }
+    "num_models": len(models),
+    "models": models
 }
-print(f'layers: {layers}, through-shape: {list(zip(layers[:-1], layers[1:]))}')
 
-model = dockingProtocol(modelParams).to(device=device)
-print(model)
-# print("inital grad check")
-# for name, param in model.named_parameters():
-#     if param.requires_grad:
-#         print(name, param.data)
 totalParams = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f'total trainable params: {totalParams}')
 lossFn = nn.MSELoss() # gives 'mean' val by default
 # adam, lr=0.01, weight_decay=0.001, prop=0.2, dropout=0.2
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-model.load_state_dict(torch.load(f'../basisModel{mn}.pth'), strict=False)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0003, weight_decay=0.0001)
 lendl = len(trainds)
 num_batches = len(traindl)
 print("Num batches:", num_batches)
@@ -272,17 +238,19 @@ plt.plot(epochR, validLoss, label='Validation Loss', linestyle='-', color='darkg
 plt.plot(epochR, trainR, label='Training R^2', linestyle='--', color='lightblue')
 plt.plot(epochR, validR, label='Validation R^2', linestyle='--', color='darkblue')
 
+plt.ylim([0, 2])
+
 plt.title('Training and Validation Loss/R^2')
 plt.xlabel('Epochs')
 plt.ylabel('Loss / R^2')
  
 plt.legend(loc='best')
 
-cepoch = epochs if converged_at == 0 else converged_at
-plt.xticks(np.arange(0, cepoch+1, cepoch//10))
+plt.xticks(np.arange(0, epochs + 1, 2))
  
 plt.legend(loc='best')
 plt.savefig(f'{res_path}/r_loss{data}.png')
+plt.show()
 plt.close()
 with open(f'{res_path}/r_lossData{data}.txt', 'w+') as f:
     f.write('train loss, validation loss\n')

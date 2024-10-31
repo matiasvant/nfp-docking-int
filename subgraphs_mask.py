@@ -12,7 +12,7 @@ import random
 from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_matrix, average_precision_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 import sys
-from networkP import dockingProtocol, GraphLookup
+from networkP import EnsembleReg 
 from util import *
 import time
 from rdkit import Chem
@@ -21,6 +21,10 @@ from rdkit.Chem.Draw import DrawingOptions
 from rdkit.Chem import AllChem
 from rdkit.Chem import BRICS
 from scipy.stats import linregress
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import FragmentCatalog, RDConfig
+from rdkit.Chem import rdmolops
+from collections import defaultdict
 from sklearn.preprocessing import StandardScaler
 import os
 import re
@@ -28,6 +32,7 @@ from itertools import combinations
 import pickle
 from tqdm import tqdm
 from subgraphs import setup_dataset, get_atom_neighborhood
+import warnings
 
 def flatten(nested, except_last=False):
     """Flattens nested tuple or list"""
@@ -155,7 +160,7 @@ def return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list):
                 if i == len(remain_fg_list):
                     remain_fg_list.append(fg)
     
-    # wash the hit function group atom by using the remained fg, remove the small wrongly matched fg
+     # wash the hit function group atom by using the remained fg, remove the small wrongly matched fg
     hit_at_wash = []
     hit_fg_name_wash = []
     for j in range(len(hit_at)):
@@ -176,45 +181,41 @@ def return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list):
 
     return group_list, name_list
 
-from rdkit import Chem
-from rdkit.Chem import Draw
-from rdkit.Chem.Draw import DrawingOptions
-from rdkit.Chem import AllChem
-from rdkit.Chem import BRICS
-from rdkit.Chem import FragmentCatalog, RDConfig
-import os
-
-from rdkit import Chem
-from rdkit.Chem.Scaffolds import MurckoScaffold
-from rdkit.Chem import rdmolops
-from collections import defaultdict
-
-
-
-
 def remove_nodes(node_list,smile_i,a,b,e):
     """Remove nodes and their connections from a molecule"""
+
+    # remove_nodes(atom_group, copy_i, masked_a, masked_b, masked_e)
+    # print(a[smile_i][:4])
+    # print(e[smile_i])
     for node_i in node_list:
         if node_i > a.shape[1]-1:
             print(f"Failed to remove atom {node_i} when from {a.shape[1]} atom molecule")
             continue
-        mol_e = e[smile_i, :, :]
+        mol_e = e[smile_i, :, :] # edges matrix for specific combination
+        # print(node_i, mol_e[node_i], a[smile_i][node_i])
+        # print(b[smile_i].shape, b[smile_i][:4])
+        # node list refers to index in edges of atoms
+        # need to remove index in edges and all instances of index in arrays
+        
         mask = (mol_e == node_i)
         indices = torch.nonzero(mask, as_tuple=False)
+        mask[node_i] = True
         if indices.numel() == 0:
             continue
 
-        atom_idxs = indices[:, 0]
-        bond_idxs = indices[:, 1]
+        # node list map directly to atomfeature index
+        atom_idxs = node_i
 
+        bonda_idxs = indices[:, 0]
+        bondb_idxs = indices[:, 1]
         # print(f"Before", e[smile_i, int(atom_idxs[0]), :]) # picks a molecule, shows u its before n after
         # print("Before edge feats:", b[smile_i, atom_idxs[0], bond_idxs[0],:])
         a[smile_i, atom_idxs, :] = 0
-        b[smile_i, atom_idxs, bond_idxs, :] = 0 # -1e ensures ignored; redundancy
+        b[smile_i, bonda_idxs, bondb_idxs, :] = 0 # -1e ensures ignored; redundancy
+        b[smile_i, atom_idxs, :, :] = 0 # remove all bond feats for masked atom
         e[smile_i,:,:][mask] = -1
         # print("--After:", e[smile_i, int(atom_idxs[0]), :])
         # print("==After Edge feats:", b[smile_i, atom_idxs[0], bond_idxs[0],:])
-
 
 def get_ring_names(mol, ring_systems_dict):
     ri = mol.GetRingInfo()
@@ -252,9 +253,9 @@ def get_ring_names(mol, ring_systems_dict):
         except Chem.AtomValenceException as e:
             print(f"AtomValenceException occurred while processing ring {i}: {e}")
         
-        except Chem.KekulizeException as e:
+        except Chem.rdchem.KekulizeException as e:
             print(f"KekulizeException occurred while processing ring {i}: {e}")
-            draw_molecule(f"kek_err_{mol}.png", 'none', highlight_atoms=flatten(ring), color=(200.0/255.0, 40.0/255.0, 20.0/255.0), mol=mol)
+            draw_molecule(f"kek_err.png", 'none', highlight_atoms=flatten(ring), color=(200.0/255.0, 40.0/255.0, 20.0/255.0), mol=mol)
 
         except Exception as e:
             print(f"An unexpected error occurred while processing ring {i}: {e}")
@@ -262,6 +263,7 @@ def get_ring_names(mol, ring_systems_dict):
     return atom_rings, found_rings
 
 def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None):
+    # model, solubility, smile
     dataset = setup_dataset(input_data=orig_data, name="SME", reference=reference)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
@@ -313,7 +315,7 @@ def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None)
 
     loaded_model.eval()
     for batch, (a, b, e, (y, ID)) in tqdm(enumerate(dataloader), total=len(dataloader), desc="Making Mask-dict", file=sys.stdout, mininterval=10.0):
-        ID = ID[0]
+        ID = ID[0] # smile
         a, b, e = a.to(device), b.to(device), e.to(device)
         if 'ZINC' in ID:
             smile = dataset.smiles[batch]
@@ -321,13 +323,14 @@ def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None)
 
         # get functional groups
         mol = Chem.MolFromSmiles(ID)
+        # SURVEY HERE
         fg_at, fg_name = return_fg_hit_atom(mol, fg_name_list, fg_with_ca_list, fg_without_ca_list)
-        # print("Hit atoms:", fg_at, "\n Hit names:", fg_name)
-        # draw_molecule("test_FGs.png", "ClCCC#N", highlight_atoms=flatten(hit_fg_at), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
+        # draw_molecule("test_FGs.png", ID, highlight_atoms=flatten(fg_at), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
 
         # get rings
         ring_ats, ring_names = get_ring_names(mol, ring_systems)
-        # print("Ring ats:", ring_ats, "Names:\n", ring_names)
+        if "Benzene_0" not in ring_names: 
+            continue
         # draw_molecule(f"testr_{ring_names}.png", ID[0], highlight_atoms=flatten(ring_ats), color=(200.0/255.0, 40.0/255.0, 20.0/255.0))
 
         # scaffold = MurckoScaffold.GetScaffoldForMol(mol)
@@ -337,22 +340,29 @@ def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None)
         # draw_molecule(f"test_rings.png", smiles, highlight_atoms=flatten(atominfo), color=(100.0/255.0, 200.0/255.0, 20.0/255.0))
 
         # get most anti/corr if provided
-        anti_and_corr = []
-        anti_and_corr_ats = []
-        if best_worst_activs:
-            # print('ID:', ID)
-            (c_core_at, c_tensor, c_deg) = corr_dict[ID]
-            (a_core_at, a_tensor, a_deg) = anticorr_dict[ID]
-            corr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=c_core_at, max_degree = c_deg)
-            anticorr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=a_core_at, max_degree = a_deg)
-            anti_and_corr_ats += [corr_ats] + [anticorr_ats]
-            anti_and_corr.append('most_corr')
-            anti_and_corr.append('most_anticorr')
+        # THIS SHIT RIGHT HERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # anti_and_corr = []
+        # anti_and_corr_ats = []
+        # if best_worst_activs:
+        #     # print('ID:', ID)
+        #     (c_core_at, c_tensor, c_deg) = corr_dict[ID]
+        #     (a_core_at, a_tensor, a_deg) = anticorr_dict[ID]
+        #     corr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=c_core_at, max_degree = c_deg)
+        #     anticorr_ats = get_atom_neighborhood(smile=[ID], center_atom_i=a_core_at, max_degree = a_deg)
+        #     anti_and_corr_ats += [corr_ats] + [anticorr_ats]
+        #     anti_and_corr.append('most_corr')
+        #     anti_and_corr.append('most_anticorr')
 
-        subgr_at = fg_at + ring_ats + anti_and_corr_ats
-        subgr_nm = fg_name + ring_names + anti_and_corr
+        # subgr_at = fg_at + ring_ats + anti_and_corr_ats
+        # subgr_nm = fg_name + ring_names + anti_and_corr
+        subgr_at = fg_at + ring_ats
+        subgr_nm = fg_name + ring_names
+
         full_subgr_at = all_combinations(subgr_at, lists=True)
         full_subgr_nm = all_combinations(subgr_nm)
+
+        if len(subgr_at) == 0 or len(full_subgr_at) > 5000: continue
+
         # print("full subgrat", full_subgr_at)
         # print("full subgr-name", full_subgr_nm)
         # print("Groups:", len(subgr_at), "-(choose)->", len(full_subgr_at))
@@ -368,11 +378,14 @@ def SME(loaded_model, orig_data, reference, scaler=None, best_worst_activs=None)
         with torch.no_grad():
             preds = loaded_model((masked_a, masked_b, masked_e)).reshape(-1, 1)
             if scaler:
-                preds = scaler.inverse_transform(preds)
+                preds = scaler.inverse_transform(preds.cpu().detach().numpy())
                 # print("Scaled pred:", preds)
 
         # old - new = difference
+        # data: higher value -> more soluble; lower value -> less soluble
+        # transformed to log
         original = preds[0]
+        # print(ID, preds[1:].mean() - original, original)
         preds[1:] = preds[1:] - original
 
         subgr_changes = defaultdict(float) # may add atoms:{'change': 0.0, 'atoms':[]}
@@ -398,7 +411,6 @@ if __name__ == "__main__":
         if torch.backends.mps.is_available()
         else "cpu"
     )
-    print(f"Using {device} device")
 
     # reference SMILEs/zID
     smileData = pd.read_csv('./data/smilesDS.smi', delimiter=' ')
@@ -406,25 +418,28 @@ if __name__ == "__main__":
     smileData.set_index('zinc_id', inplace=True)
 
     # import model
-    model_path = find_item_with_keywords('./src/trainingJobs', [args.d, 'model'], dir=False, file=True)
+    model_path = find_item_with_keywords('./src/ensemble', ['model'], dir=False, file=True)
     model_path = model_path[0]
-    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-    model = dockingProtocol(params=checkpoint['params'])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        checkpoint = torch.load(model_path)
+    model = EnsembleReg(checkpoint['params']['num_models'], *checkpoint['params']['models']).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
+    print(model)
 
     # import activation_dicts (optional)
-    most_anticorr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'worst', 'pkl'], dir=False, file=True)
-    most_corr_path = find_item_with_keywords(f'./results/{data_name}', [data_name, 'best', 'pkl'], dir=False, file=True)
-    print("Most Corr Path:", most_anticorr_path)
-    print("Most Anti Path:", most_corr_path)
-    with open(most_anticorr_path[0], 'rb') as file:
-        most_anticorr_dict = pickle.load(file)
-    with open(most_corr_path[0], 'rb') as file:
-        most_corr_dict = pickle.load(file)
+    # most_anticorr_path = find_item_with_keywords(f'./results/{data_name}', ['worst', 'pkl'], dir=False, file=True)
+    # most_corr_path = find_item_with_keywords(f'./results/{data_name}', ['best', 'pkl'], dir=False, file=True)
+    # print("Most Corr Path:", most_anticorr_path)
+    # print("Most Anti Path:", most_corr_path)
+    # with open(most_anticorr_path[0], 'rb') as file:
+    #     most_anticorr_dict = pickle.load(file)
+    # with open(most_corr_path[0], 'rb') as file:
+    #     most_corr_dict = pickle.load(file)
 
     print("Data:", data_name)
     print("Model:", model_path)
-    mol_dict = SME(model, data_name, smileData, checkpoint['scaler'], (most_corr_dict, most_anticorr_dict))
+    mol_dict = SME(model, data_name, smileData, None)
 
     # save results
     output_dir = os.path.join(os.getcwd(), 'results', data_name)
@@ -442,3 +457,5 @@ if __name__ == "__main__":
         print("Mol: ", mol)
         for fg,change in subgr_dict.items():
             print("      ", fg, "-- ",change)
+
+    # plotting in subgr_process

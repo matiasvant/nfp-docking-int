@@ -1,4 +1,4 @@
-labels	Compound ID	smiles
+labels	Compound_ID	smiles
 -2.18	"1,1,1,2-Tetrachloroethane"	ClCC(Cl)(Cl)Cl
 -2	"1,1,1-Trichloroethane"	CC(Cl)(Cl)Cl
 -1.74	"1,1,2,2-Tetrachloroethane"	ClC(Cl)C(Cl)Cl

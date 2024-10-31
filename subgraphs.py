@@ -110,7 +110,7 @@ def draw_molecule_with_highlights(filename, smiles, highlight_atoms, color=(60.0
 def setup_dataset(input_data, name, reference, input_only=False, no_graph=False, strip_ID=False):
     # input zIDs
     data_path = find_item_with_keywords(search_dir='./data',keywords=[input_data],file=True)[0]
-    allData = labelsToDF(data_path)
+    allData = labelsToDF(data_path) # labels, compound id, smiles
     # print("Data cols:", allData.columns)
 
     # Ensure consistent 'smile' label; or get smiles from ZID reference file
@@ -147,6 +147,9 @@ def setup_dataset(input_data, name, reference, input_only=False, no_graph=False,
         if input_only: return xData
         return xData, yData
     
+    allData.reset_index(inplace=True)
+    xData = [[index, row['smile']] for index, row in allData.iterrows()] # (ID, smile)
+    # (ID, smile), label
     dataset = dockingDataset(train=xData, 
                             labels=yData,
                             name=name, just_structure=False, atom_masks=None, just_smiles=just_smiles)
@@ -164,7 +167,7 @@ def find_most_predictive_features(loaded_model, orig_data, reference):
     for batch, (a, b, e, (y, ID)) in enumerate(dataloader):
             at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
             _, fps = loaded_model((at, bo, ed), return_fp=True)
-            fps = fps.detach().numpy()
+            fps = fps.cpu().detach().numpy()
 
             for i, smile in enumerate(ID):
                 fp_dict[smile] = fps[i]
@@ -248,7 +251,7 @@ if __name__ == "__main__":
     for batch, (a, b, e, (y, zID)) in enumerate(dataloader):
             at, bo, ed, Y = a.to(device), b.to(device), e.to(device), y.to(device)
             activs, fps, preds = model((at, bo, ed), return_conv_activs=True, return_fp=True)
-            fps = fps.detach().numpy()
+            fps = fps.cpu().detach().numpy()
 
             for i, z_id in enumerate(zID):
                 fp_dict[z_id] = fps[i]
@@ -292,6 +295,8 @@ if __name__ == "__main__":
             if i==0: # get smiles from orig dataset
                 orig_IDs = setup_dataset(input_data=checkpoint['dataset'], name="Retrieve SMILEs", reference=smileData, input_only=True, no_graph=True)
                 orig_IDs = np.array(orig_IDs)
+                # orig_IDs = np.stack((orig_IDs, orig_IDs), axis=-1)
+                # print(orig_IDs.shape)
                 orig_IDs = pd.DataFrame(orig_IDs, index=orig_IDs[:, 0], columns=['ID', 'smile'])
             try:
                 smile = orig_IDs.loc[ID][1]
@@ -324,12 +329,14 @@ if __name__ == "__main__":
             if i==0: # get smiles from orig dataset
                 orig_IDs = setup_dataset(input_data=checkpoint['dataset'], name="Retrieve SMILEs", reference=smileData, input_only=True, no_graph=True)
                 orig_IDs = np.array(orig_IDs)
+                # orig_IDs = np.stack((orig_IDs, orig_IDs), axis=-1)
                 orig_IDs = pd.DataFrame(orig_IDs, index=orig_IDs[:, 0], columns=['ID', 'smile'])
+                print(orig_IDs)
             try:
                 smile = orig_IDs.loc[ID][1]
             except KeyError:
                 smile = None
-                print(f"Smile not found for{ID}")
+                # print(f"Smile not found for{ID}")
                 continue
         
         degree = atomTuple[0]
