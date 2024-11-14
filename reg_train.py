@@ -143,6 +143,11 @@ try:
     os.mkdir(f'./../model{mn}')
 except:
     print("error in creating res dir")
+    
+with open(f'{res_path}/testset.txt', 'w') as f:
+    f.write(f'id,smile,y\n')
+    for i in range(len(xTest)):
+       f.write(f'{xTest[i][0]},{xTest[i][1]},{yTest[i]}\n') 
 
 
 fpl = fplCmd 
@@ -165,9 +170,21 @@ print(f'layers: {layers}, through-shape: {list(zip(layers[:-1], layers[1:]))}')
 model = dockingProtocol(modelParams).to(device=device)
 print(model)
 # print("inital grad check")
+# p_in, g_in = 0, 0
 # for name, param in model.named_parameters():
 #     if param.requires_grad:
-#         print(name, param.data)
+#         print("grad: ", end="")
+#         p_in += 1
+#         print(name, end=", ")
+#         if param.grad == None: 
+#             print("no grad", end="")
+#         else: g_in +=1 
+#         print()
+#     else:
+#         print(f"no grad: {name}")
+    
+            
+# print(f'\nnum unique param groups: {p_in}; num unique grads: {g_in}')
 totalParams = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f'total trainable params: {totalParams}')
 lossFn = nn.MSELoss() # gives 'mean' val by default
@@ -222,7 +239,7 @@ for epoch in range(1, epochs + 1):
     trainLoss.append(runningLoss/lendl)
     if len(r_list) != 0:
         r_squared = sum(r_list)/len(r_list)
-    trainR.append(r_squared/num_batches)
+    trainR.append(r_squared)
     if cStop: break
     print(f'Time to complete epoch: {time.time() - stime}')
     print(f'\nTraining Epoch {epoch} Results:\nloss: {runningLoss/lendl:>8f}, R^2: {r_squared/num_batches:>8f}\n------------------------------------------------')

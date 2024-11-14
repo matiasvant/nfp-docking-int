@@ -183,5 +183,6 @@ def get_ID_type(DataFrame):
             if len(matching_columns) != 1 and 'smile' in matching_columns:
                         matching_columns.remove('smile')
             ID_column_name = matching_columns[0]
+            break
 
     return ID_column_name
