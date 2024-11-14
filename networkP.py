@@ -64,8 +64,12 @@ class nfpConv(nn.Module):
         self.ishape = ishape
         self.oshape = oshape
 
-        self.w = nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape, self.oshape))), requires_grad=True).to(device)
-        self.b = nn.Parameter(torch.nn.init.constant_(torch.empty((1, self.oshape)), 0.01), requires_grad=True).to(device)
+        # self.w = nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape, self.oshape))), requires_grad=True).to(device)
+        # self.b = nn.Parameter(torch.nn.init.constant_(torch.empty((1, self.oshape)), 0.01), requires_grad=True).to(device)
+
+        b = torch.empty((1, self.oshape), device=device)
+        self.b = nn.Parameter(b)
+        torch.nn.init.constant_(self.b, 0.01) 
 
         # print(f"nfp-conv see this many bond feats - {num_bond_features(just_structure)}")
         self.degArr = nn.ParameterList([nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.ishape + num_bond_features(just_structure), self.oshape))), requires_grad=True).to(device) for _ in range(6)])
@@ -109,9 +113,12 @@ class nfpOutput(nn.Module):
         b = torch.empty((1, self.fpl), device=device)
         self.b = nn.Parameter(b)
 
-        # self.bound = 1/np.sqrt(layer)
+        self.bound = 1/np.sqrt(layer)
         torch.nn.init.xavier_normal_(self.w)
         torch.nn.init.constant_(self.b, 0.01)
+        # self.w = nn.Parameter(torch.nn.init.xavier_normal_(torch.empty((self.layer + num_bond_features(), self.fpl))), requires_grad=True).to(device)
+        # self.b = nn.Parameter(torch.nn.init.constant_(torch.empty((1, self.fpl)), 0.01), requires_grad=True).to(device)
+        # print(self.w.shape, self.b.shape)
         self.to(device)
 
     def forward(self, a, b, e):
@@ -148,7 +155,7 @@ class nfpDocking(nn.Module):
         self.fpl = fpl
         # self.hiddenFeat = hf
         self.throughShape = list(zip(layers[:-1], layers[1:]))
-        self.layersArr, self.outputArr = self.init_layers()
+        self.layersArr = self.init_layers()
         self.op = nfpOutput(self.layers[-1], self.fpl)
         self.pool = GraphPool()
         self.to(device)
@@ -156,10 +163,10 @@ class nfpDocking(nn.Module):
     def init_layers(self):
         layersArr, outputArr = [], []
         for idx, (i, o) in enumerate(self.throughShape):
-            outputArr.append(nfpOutput(self.layers[idx], self.fpl))
+            # outputArr.append(nfpOutput(self.layers[idx], self.fpl))
             layersArr.append(nfpConv(i, o))
-        outputArr.append(nfpOutput(self.layers[-1], self.fpl))
-        return nn.ModuleList(layersArr), nn.ModuleList(outputArr)
+        # outputArr.append(nfpOutput(self.layers[-1], self.fpl))
+        return nn.ModuleList(layersArr)
             
     
     def forward(self, input, return_conv_activs=False):
