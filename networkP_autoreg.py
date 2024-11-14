@@ -64,14 +64,16 @@ class GCN(nn.Module):
         a, b, e = input
         a, b, e = a.to(device), b.to(device), e.to(device)
         lay_count = len(self.layers[1:])
+        skip_conn = None
         for i in range(lay_count):
             a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
             # print(f"Layer {i}: {a.shape}")
             a = self.pool(a, e)
             # print(f"-pool->{a.shape}")
+            if i==0:
+                skip_conn = self.subgraph_sum(a)
         subgraph_embedding = self.subgraph_sum(a)
-        # print(f"SBgraph shape: {subgraph_embedding.shape}")
-        # print(f"Nodes shape: {a.shape}")
+        subgraph_embedding = subgraph_embedding
 
         if idx_list is None:
             return subgraph_embedding
@@ -123,7 +125,7 @@ class GCN_Autoreg(nn.Module):
                 layers=params["conv"]["layers"],
                 fpl= params["fpl"]
             )
-        self.Node_Pred = MLP(in_size=64, out_size=43, dropout=.2, ba=[1,1])
+        self.Node_Pred = MLP(in_size=64, out_size=44, dropout=.2, ba=[1,1])
         self.Edge_Pred = MLP(in_size=192, out_size=4, dropout=.2, ba=[1,1])
         self.to(device)
 
