@@ -34,9 +34,29 @@ class SubgraphSum(nn.Module):
         embeds_sum = torch.sum(activations, dim=1)
         return embeds_sum
 
+class AtomPositionalEmbedding(nn.Module):
+    def __init__(self, max_atoms=70, embed_dim=49): # assumes 'no structure'
+        super(AtomPositionalEmbedding, self).__init__()
+        self.pos_embed = nn.Embedding(max_atoms, embed_dim)
+        self.pos_embed.weight.requires_grad = True
+        self._initialize_padding_embedding()
+
+    def _initialize_padding_embedding(self):
+        with torch.no_grad():
+            self.pos_embed.weight[0] = torch.zeros(self.pos_embed.embedding_dim)
+            self.pos_embed.weight[0].detach().requires_grad = False  # freeze padding atom embeddings
+
+    def forward(self, atom_matrix):
+        present_atom_mask = ~(atom_matrix.sum(dim=2) == 0)  # mask to identify non-padding atoms
+        present_atom_mask = torch.flip(present_atom_mask, dims=[1]).int()
+        distance_vectors = torch.cumsum(present_atom_mask, dim=1)
+        distance_vectors = torch.flip(distance_vectors, dims=[1])  # distance from final node
+
+        pos_embeds = self.pos_embed(distance_vectors)
+        return pos_embeds
 
 class GCN(nn.Module):
-    def __init__(self, layers, fpl=32, hf=32):
+    def __init__(self, layers, fpl=32, hf=32, max_atoms=70, embed_dim=32):
         super(GCN, self).__init__()
         self.layers = layers
         self.fpl = fpl
@@ -50,38 +70,30 @@ class GCN(nn.Module):
     def init_layers(self):
         layersArr, outputArr = [], []
         i_size = num_atom_features(just_structure=True)
-
         for idx, (i, o) in enumerate(self.throughShape):
             outputArr.append(nfpOutput(self.layers[idx], self.fpl))
             layersArr.append(nfpConv(i, o, just_structure=True))
         outputArr.append(nfpOutput(self.layers[-1], self.fpl))
-        # print("FPL when initing:", self.fpl)
-        # print("Layers Arr:", nn.ModuleList(layersArr))
-        # print("Output Arr:", nn.ModuleList(outputArr))
         return nn.ModuleList(layersArr), nn.ModuleList(outputArr)
-    
+
     def forward(self, input, idx_list=None):
         a, b, e = input
         a, b, e = a.to(device), b.to(device), e.to(device)
+
         lay_count = len(self.layers[1:])
         skip_conn = None
         for i in range(lay_count):
-            a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
-            # print(f"Layer {i}: {a.shape}")
+            a = self.layersArr[i]((a, b, e))
             a = self.pool(a, e)
-            # print(f"-pool->{a.shape}")
-            if i==0:
+            if i == 0:
                 skip_conn = self.subgraph_sum(a)
         subgraph_embedding = self.subgraph_sum(a)
-        subgraph_embedding = subgraph_embedding
+        subgraph_embedding = subgraph_embedding + skip_conn
 
         if idx_list is None:
             return subgraph_embedding
         else:
-            node_embeds_list = []
-            for i in idx_list:
-                node_embeds_list.append(a[:,i,:])
-
+            node_embeds_list = [a[:, i, :] for i in idx_list]
             return subgraph_embedding, node_embeds_list
 
 class MLP(nn.Module):
@@ -121,6 +133,8 @@ class GCN_Autoreg(nn.Module):
     def __init__(self, params):
         super(GCN_Autoreg, self).__init__()
         self.node_toggle = True
+        self.node_pred_pos = AtomPositionalEmbedding()
+        self.edge_pred_pos = AtomPositionalEmbedding()
         self.GCN = GCN(
                 layers=params["conv"]["layers"],
                 fpl= params["fpl"]
@@ -131,14 +145,18 @@ class GCN_Autoreg(nn.Module):
 
     def forward(self, a_b_e_input, pred_node=True, idx_orig=None, idx_dest=None):
         self.node_toggle = pred_node
+        (a,b,e) = a_b_e_input
         if pred_node:
-            subgr_embeds = self.GCN(a_b_e_input)
+            pos_embeds = self.node_pred_pos(a)
+            a = a + pos_embeds
+            subgr_embeds = self.GCN((a,b,e))
             n_feats = num_atom_features(just_structure=True)
-
             pred = self.Node_Pred(subgr_embeds)
         
         else: # predict edge/bond between two arbitrary nodes
-            subgr_embeds, [orig_embed, dest_embed] = self.GCN(a_b_e_input, [idx_orig, idx_dest])
+            pos_embeds = self.edge_pred_pos(a)
+            a = a + pos_embeds
+            subgr_embeds, [orig_embed, dest_embed] = self.GCN((a,b,e), [idx_orig, idx_dest])
 
             combined = torch.cat((subgr_embeds, orig_embed, dest_embed), axis=1)
             n_feats = num_bond_features(just_structure=True)

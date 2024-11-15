@@ -113,16 +113,15 @@ def replace_elems_w_row_indices(matrix):
     result = np.where(mask, row_indices, -1)
     return result
 
-def get_one_hot_weights(allData, feedback=False):
-    # currently just node weights
-    def count_atoms(smiles):
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            print(f"fail to convert {mol} from smile")
-        atom_symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
-        atom_counts = Counter(atom_symbols)
-        return atom_counts
+def norm_vector(vector, scale=50, minimum=.01):
+    min_val = vector.min()
+    max_val = vector.max()
+    norm_vec = (vector - min_val) / (max_val - min_val)
+    norm_vec *= scale # scale up distribution
+    norm_vec += minimum # prevent C from being given 0 weighting
+    return norm_vec
 
+def get_one_hot_weights(allData, feedback=False):
     periodic_table = Chem.GetPeriodicTable()
 
     total_count={}
@@ -130,14 +129,21 @@ def get_one_hot_weights(allData, feedback=False):
         at = periodic_table.GetElementSymbol(i)
         total_count[at]=0
 
+    total_bonds = [0,0,0,0]
     for smile in allData['smiles']:
-        atom_counts = count_atoms(smile)
+        mol = Chem.MolFromSmiles(smile)
+        if mol is None:
+            print(f"fail to convert {mol} from smile")
+
+        # count nodes
+        atom_symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
+        atom_counts = Counter(atom_symbols)
         for atom, count in atom_counts.items():
             if atom in total_count:
                 total_count[atom] += count
             else: 
                 print(f"don't have {atom} in dict")
-
+        
     num_atoms=0
     for atom,count in total_count.items():
         num_atoms+=count
@@ -157,11 +163,7 @@ def get_one_hot_weights(allData, feedback=False):
     at_weights[zero_mask] = 0
     # normalize distribution
     nonzeros = at_weights[~zero_mask]
-    min_val = nonzeros.min()
-    max_val = nonzeros.max()
-    norm_nonzeros = (nonzeros - min_val) / (max_val - min_val)
-    norm_nonzeros *= 50 # scale up distribution
-    norm_nonzeros += .01 # prevent C from being given 0 weighting
+    norm_nonzeros = norm_vector(nonzeros)
     at_weights[~zero_mask] = norm_nonzeros
 
     if feedback:
@@ -171,6 +173,7 @@ def get_one_hot_weights(allData, feedback=False):
         print("Values:", atom_counts)
         print("At_weights (inversely porportional to freq^):", at_weights)
         print("Nonzeros:", nonzeros)
+    
     return at_weights
 
 def NLL_loss(true, mean, var, visualize=False):
@@ -200,7 +203,7 @@ def NLL_loss(true, mean, var, visualize=False):
     return err_loss
 
 def check_accuracy(label, pred):
-    """Check quantized feature prediction accuracy (non-sampled) for feat label & logits"""
+    """Check onehot feature prediction accuracy (non-sampled) for feat label & logits"""
     true_one_hot = np.argmax(label.detach().numpy(), axis=1)
     pred_one_hot = np.argmax(pred.detach().numpy(), axis=1)
     matching_rows = (true_one_hot == pred_one_hot).sum().item()
@@ -299,23 +302,23 @@ print("Num batches:", num_batches)
 print(f"Training set size: {len(trainds)}")
 bestVLoss = 100000000
 lastEpoch = False
-epochs = 20  # 50
+epochs = 10  # 50
 earlyStop = EarlyStopper(patience=10, min_delta=0.01)
 converged_at = 0
 trainLoss, validLoss, rsq_list = [], [], []
 
 mse_loss = nn.MSELoss()
-class_weights = get_one_hot_weights(allData)
-ce_loss = nn.CrossEntropyLoss(weight=class_weights)
-
-dummy_inputs = torch.randn(4, 44)  # 4 examples, num_classes classes
-dummy_labels = torch.tensor([0, 1, 2, 3])  # example labels for each class
-loss = ce_loss(dummy_inputs, dummy_labels)
-print("Dummy losses (for classes 0,1,2,3) weights:", loss.item())
+atom_frequencies = get_one_hot_weights(allData, True)
+bond_frequencies = torch.tensor([676756.,35961.,14051.,11.], dtype=torch.float)
+bond_frequencies = 1 / bond_frequencies
+bond_frequencies = norm_vector(bond_frequencies, scale = 100, minimum=1e-6)
+print("Bond frequencies:", bond_frequencies)
+node_ce_loss = nn.CrossEntropyLoss(weight=atom_frequencies)
+edge_ce_loss = nn.CrossEntropyLoss(weight=bond_frequencies)
 
 loss = 'CE'
-node_pred = True
-edge_pred = False
+node_pred = False
+edge_pred = True
 
 all_loss, all_n_r, all_e_r, all_n_match, all_e_match = [], [], [], [], []
 
@@ -336,8 +339,22 @@ for epoch in range(1, epochs + 1):
     #     for name, param in model.Node_Pred.mean_mlp.mlp.named_parameters():
     #         print(f'At-Start-of-Epoch {epoch}- MLP {name} requires_grad: {param.requires_grad}')
 
+    # if epoch>0:
+    #     print(f"--Epoch {epoch} gradcheck--")
+    #     for name, param in model.GCN.named_parameters():
+    #         if 'posEmb' in name:
+    #             print(f"Layer: {name}")
+    #             print(f"  - requires_grad: {param.requires_grad}")
+    #             print(f"  - grad: {param.grad if param.grad is not None else 'None'}")
+    #             print(f"  - value: {param.data}")
+    #             print("-" * 50)
+    #             print("0th vec:", param[0])
+    #             print("1st vec:", param[1])
+
+    # print("bond frequencies:", bond_frequencies)
     for batch, (a, b, e, (y, zidTr)) in enumerate(traindl):
-        if batch>20: break
+        if batch>200:
+            break
         a,b,e = a.to(device), b.to(device), e.to(device)
 
         max_atoms = a.size(1)
@@ -445,44 +462,22 @@ for epoch in range(1, epochs + 1):
                 all_n_match.append('B')
                 all_e_match.append('B')
 
-            node_loss = torch.tensor([0], device=device).float()
-
-            ## Undersample C (v. common class)
-            # threshold = .35 # % odds of keeping C example 
-            # notC_mask = atom_labels[:,0] == 0
-            # rand_keep = torch.rand(notC_mask.size())
-            # rand_keep = threshold > rand_keep
-            # notC_mask = notC_mask | rand_keep
-
-            # atom_labels = atom_labels[notC_mask]
-            # if atom_labels.shape[0] == 0: break 
-            # sbgr_a = sbgr_a[notC_mask, :, :]
-            # sbgr_b = sbgr_b[notC_mask, :, :, :]
-            # sbgr_e = sbgr_e[notC_mask, :, :]
+            node_loss = torch.tensor([0.0], device=device, requires_grad=True)
             
             if node_pred:
                 mean = model((sbgr_a[:, :-1, :], sbgr_b[:, :-1, :, :], sbgr_e[:, :-1, :]), pred_node=True)
 
-                if loss == 'CE':
-                    __, ind_labels = atom_labels[:,:44].max(dim=1) # reduce to one-hot label
-                    node_loss = ce_loss(mean, ind_labels)
+                __, ind_labels = atom_labels[:,:44].max(dim=1) # reduce to one-hot label
+                node_loss = node_ce_loss(mean, ind_labels)
 
-                # _, _, r_value, _, _= linregress(atom_labels.detach().numpy().flatten(), mean.detach().numpy().flatten())
-                r_value=1
 
                 # Check prediction accuracy (non-sampled)
                 matching_ratio = check_accuracy(atom_labels[:,:44], mean[:,:44]) # compare one-hot atom choices
                 
+                r_value=1
                 r_list.append(r_value ** 2)
                 all_n_r.append(r_value ** 2)
                 all_n_match.append(matching_ratio)
-
-                if i==1:
-                    if loss == 'NLL':
-                        node_loss = NLL_loss(true=atom_labels, mean=mean, var=var, visualize=True)
-                        print("Var:", var[0,:5])
-                    print(f"Batch {batch} - Subgraph-up-to-{i}:")
-                    print(f"True: {atom_labels[0,:10]}, \n Pred: {mean[0,:10]}")
 
 
             # print("Subgr B SHAPE:", sbgr_b.shape)
@@ -490,12 +485,15 @@ for epoch in range(1, epochs + 1):
             # print("Subgr E[0,0,:]", sbgr_e[0,0,:])
             # first mol, first target atom; slots x feats 
 
-            edge_loss = torch.tensor([0], device=device).float()
+            edge_loss = torch.tensor([0.0], device=device, requires_grad=True)
             e_r, e_ratio = [], []
+
             if edge_pred:
+                # bond_frequencies = bond_frequencies + torch.sum(torch.sum(bond_labels, dim=0), dim=0)
+
                 # edge-pred easier task, train on a small portion of batch
-                batch_subset = 3
-                sample_range = range(0, bond_labels.shape[1], 1)
+                batch_subset = 3 #molecules
+                sample_range = range(0, bond_labels.shape[1], 1) #target atoms
 
                 for target_atom in sample_range:
                     pred = model((sbgr_a[:batch_subset,:,:],sbgr_b[:batch_subset,:,:,:],sbgr_e[:batch_subset,:,:]), 
@@ -503,34 +501,33 @@ for epoch in range(1, epochs + 1):
                                         idx_orig=i+1, idx_dest=target_atom)
                     dest_target_bond_features = bond_labels[:batch_subset,target_atom,:]
 
-                    if loss == 'CE':
-                        __, ind_labels = dest_target_bond_features.max(dim=1)
-                        edge_t_loss = ce_loss(pred, ind_labels)
+                    # print("Target atom:", target_atom)
+                    # print("Dest Target Bond Features:", dest_target_bond_features)
+                    # torch.set_printoptions(threshold=float('inf'))
+                    # print("Bond labels shape:", bond_labels.shape)
+                    # print("Bond labels:", bond_labels)
 
-                        if (batch%20) and (i==1 or i==20):
-                            print(f"-- Target Atom {target_atom}, Batch {batch} Atom {i} --")
-                            # print("Bond feats (64 x 4):", dest_target_bond_features[:5,:])
-                            print("Labels:", ind_labels[:5])
-                            print("Preds:", pred[:5].max(dim=1).indices)
+                    __, ind_labels = dest_target_bond_features.max(dim=1)
+                    edge_t_loss = edge_ce_loss(pred, ind_labels)
+
+                    if (batch%2) and (i==1 or i==20):
+                        print(f"-- Target Atom {target_atom}, Batch {batch} Atom {i} --")
+                        print("True:", dest_target_bond_features)
+                        print("Pred:", pred)
     
-
                     edge_loss = edge_loss + edge_t_loss
-                    # _, _, r_value, _, _= linregress(dest_target_bond_features.detach().numpy().flatten(), mean.detach().numpy().flatten())
-                    r_value = 1
-                    matching_ratio = check_accuracy(dest_target_bond_features[:batch_subset,:], pred)
-                    e_r.append(r_value ** 2)
-                    e_ratio.append(matching_ratio)
+                    e_ratio.append(check_accuracy(dest_target_bond_features, pred))
+                    e_r.append(1)
 
                 edge_loss = edge_loss / bond_labels.shape[1] # weight node/edge preds roughly equally
                 all_e_match.append(sum(e_ratio)/len(e_ratio))
                 all_e_r.append(sum(e_r)/len(e_r))
-
+            
+            subgr_loss = torch.tensor([0.0], requires_grad=True)
             subgr_loss = node_loss + edge_loss
             all_loss.append(subgr_loss.item())
             subgr_loss = (subgr_loss*(atom_labels.shape[0]/a.shape[0])) # CE,MSE,NLL implementation weights all equally; as batches get smaller, weight loss lower
-
-            sbgr_loss = torch.tensor([0.0], requires_grad=True)
-            batch_loss = batch_loss + node_loss
+            batch_loss = batch_loss + subgr_loss
 
         batch_loss = batch_loss/a.shape[0] # normalize by batchsize
         epoch_loss += batch_loss.item()
@@ -586,12 +583,9 @@ if converged_at != 0:
 else:
     epochR = range(1, epoch + 1)
 
-if params["1var"]:
-    var_t = "1_Var"
-else:
-    var_t = "Var"
+var_t = "posEmbeds"
 if node_pred and edge_pred: pred_task = "n&e"
-elif node_pred: pred_task = "LABEL_PEEP"
+elif node_pred: pred_task = "node"
 elif edge_pred: pred_task = "edge"
 
 model_path = f'AR_{data}_model_{var_t}_{loss}_{pred_task}.pth'
