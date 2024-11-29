@@ -283,10 +283,8 @@ class dockingProtocol(nn.Module):
 class EnsembleReg(nn.Module):   
     def __init__(self, n_m, *argv):
         super().__init__()
-        self.models = []
+        self.models = nn.ModuleList(argv)
         self.n_m = n_m
-        for arg in argv:
-            self.models.append(arg)
         self.classifier = nn.Linear(n_m, 1)
         
     def forward(self, x):
