@@ -55,7 +55,8 @@ class GraphLookup(nn.Module):
 
     def forward(self, atoms, edges, maskvalue=0, include_self=True):
         atoms, edges = atoms.to(device), edges.to(device)
-        return self.lookup_neighbors(atoms, edges, maskvalue, include_self)
+        out = self.lookup_neighbors(atoms, edges, maskvalue, include_self)
+        return out
 
 class nfpConv(nn.Module):
     """Convolve over neighbors, sum"""
@@ -88,18 +89,19 @@ class nfpConv(nn.Module):
 
         new_features = None
         stored_activations = []
+
         for degree in range(6): # no atom has >5 bonds
             atom_masks_this_degree = (atom_degrees == degree).float()
+            # print(f"Deg {degree}: (atomfts {summed_atom_features.shape} + bondfts {summed_bond_features.shape}) * (degArr[degree]: {self.degArr[degree].shape})")
             new_unmasked_features = F.relu(torch.matmul(summed_features, self.degArr[degree]) + self.b)
             new_masked_features = new_unmasked_features * atom_masks_this_degree
             if return_conv_activs:
                 stored_activations.append((degree, new_masked_features))
             new_features = new_masked_features if degree == 0 else new_features + new_masked_features
 
-        if stored_activations:
+        if return_conv_activs:
             return stored_activations, new_features
         else: return new_features
-
 
 class nfpOutput(nn.Module):
     """Apply learned weight to conv. outputs"""
@@ -174,10 +176,11 @@ class nfpDocking(nn.Module):
         a, b, e = a.to(device), b.to(device), e.to(device)
         lay_count = len(self.layers[1:])
         for i in range(lay_count):
-            if return_conv_activs and i == lay_count-1: # if last store activations
-                activations, a = self.layersArr[i]((a, b, e), return_conv_activs=True)
-                # print("Activations:",activations)
-                # print("\nA:",a)
+            if i == lay_count-1: # if last layer store activations/grads of output
+                if return_conv_activs:
+                    activations, a = self.layersArr[i]((a, b, e), return_conv_activs=True)
+                else:
+                    a = self.layersArr[i]((a, b, e))
             else:
                 a = self.layersArr[i]((a, b, e)) # calls nfpConv layer on inputs
             a = self.pool(a, e)
@@ -255,22 +258,30 @@ class dockingProtocol(nn.Module):
                 activation=params["activation"]
             )
         )
+        self.stored_grads = []
         self.to(device)
 
     def forward(self, input, return_conv_activs=False, return_fp=False):
         if return_conv_activs and return_fp:
             conv_activs, fp_input = self.model[0](input, return_conv_activs=True) # run conv on inputs
             pred, fp_activs = self.model[1](fp_input, return_fp=True) # run linears on conv-outputs
+            pred = torch.flatten(pred, start_dim=0)
             return conv_activs, fp_activs, pred
         elif return_conv_activs:
             conv_activs, fp_input = self.model[0](input, return_conv_activs=True)
-            return conv_activs, torch.squeeze(self.model[1](fp_input))
+            pred = self.model[1](fp_input)
+            pred = torch.flatten(pred, start_dim=0)
+            return conv_activs, pred
         elif return_fp:
             fp_input = self.model[0](input)
+            fp, pred = self.model[1](fp_input, return_fp=True)
+            pred = torch.flatten(pred, start_dim=0)
             return self.model[1](fp_input, return_fp=True)
         else:
             fp_input = self.model[0](input)
-            return torch.squeeze(self.model[1](fp_input))
+            pred = self.model[1](fp_input)
+            pred = torch.flatten(pred, start_dim=0)
+            return pred
     
     def save(self, params, dataset, outpath, scaler=None):
         torch.save({
@@ -287,13 +298,20 @@ class EnsembleReg(nn.Module):
         self.n_m = n_m
         self.classifier = nn.Linear(n_m, 1)
         
-    def forward(self, x):
+    def forward(self, x, return_conv_activs=False):
         x_n = self.models[0](x)[:, None]
+        model_activs = []
         for model in self.models[1:]:
-            x_m = model(x)
+            if return_conv_activs:
+                activs, x_m = model(x, return_conv_activs=True)
+                model_activs.append(activs)
+            else:
+                x_m = model(x)
             x_n = torch.cat((x_n, x_m[:, None]), dim=1)
         out = self.classifier(x_n)
-        return out.squeeze(1)
+        if return_conv_activs:
+            return model_activs, out
+        return out
     
     def save(self, params, dataset, outpath, scaler=None):
         torch.save({

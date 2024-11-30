@@ -12,7 +12,7 @@ import random
 from sklearn.metrics import auc, precision_recall_curve, roc_curve, confusion_matrix, average_precision_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 import sys
-from networkP import dockingProtocol, GraphLookup, EnsembleReg
+from networkP import dockingProtocol, GraphLookup, EnsembleReg, nfpConv
 from util import *
 import time
 from rdkit import Chem
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     smileData.set_index('zinc_id', inplace=True)
 
     dataset, scaler = setup_dataset(input_data=target_dataset, name="Get gradients", reference=smileData, input_only=False)
-    dataloader = DataLoader(dataset, batch_size=12, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=7, shuffle=False)
 
     # import ensemble model
     model_path = find_item_with_keywords('./src/ensemble', ['model'], dir=False, file=True)
@@ -173,32 +173,50 @@ if __name__ == "__main__":
     for name,param in ensemble.named_parameters(): # remove pre-classifier-freeze applied at train
         param.requires_grad = True
 
-    # add hooks to each submodel
-    submodel_grads = {}
-    
-    def global_backward_hook(module, grad_input, grad_output):
-        for name, mod in ensemble.named_modules():
-            if '0.layersArr.3.degArr' in name:  # last conv layer
-                degArr_grads = []
-                for i, weight in enumerate(mod.parameters()):
-                    degArr_grads.append(weight.grad)     
-                model_i = ".".join(name.split(".", 2)[:2])
-                submodel_grads[model_i] = degArr_grads
+    all_grads = {}
+    one_mols_grad = []
+    hooks = []
 
-    hook = ensemble.register_full_backward_hook(global_backward_hook)
+    # For a submodel: get the output of lastconv via forward hook; get its grads via backward hook
+    def wrapper(module, model_i):
+        def submodel_forward_hook(module, input, output):     
+            def output_backward_hook(grad):
+                # print(f"Model {model_i} grad-shape:", grad.shape)
+                one_mols_grad.append(grad.squeeze(0))
+            back_hook = output.register_hook(output_backward_hook)
+            hooks.append(back_hook)
+            
+        forward_hook = module.register_forward_hook(submodel_forward_hook)
+        hooks.append(forward_hook)
+
+    for name, mod in ensemble.named_modules():
+        # attach hook to last conv layer of each submodel
+        if isinstance(mod, nfpConv) and 'layersArr.3' in name:
+            model_i = ".".join(name.split(".", 2)[:2])
+            wrapper(mod, model_i)
 
     ensemble.eval()
     for batch, (a, b, e, (y, zID)) in enumerate(dataloader):
             at, bo, ed, scaled_Y = a.to(device), b.to(device), e.to(device), y.to(device)
-            scaled_preds = ensemble((at, bo, ed))
 
-            loss = lossFn(scaled_preds, scaled_Y)
-            loss.backward(retain_graph=True)
+            for i in range(y.shape[0]):
+                one_mols_grad = []
+                scaled_pred = ensemble((at[i,:,:].unsqueeze(0), bo[i,:,:].unsqueeze(0), ed[i,:,:].unsqueeze(0)))
+                loss = lossFn(scaled_pred.squeeze(), scaled_Y[i])
+                loss.backward(retain_graph=True)
+                all_grads[zID[i]] = one_mols_grad
 
-            preds = scaler.inverse_transform(scaled_preds.detach().cpu().numpy().reshape(-1, 1)).T[0].tolist()
-            Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
-            if batch>3: break
+            # preds = scaler.inverse_transform(scaled_preds.detach().cpu().numpy().reshape(-1, 1)).T[0].tolist()
+            # Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
+            if batch>2: break
 
-    print("hook:", hook)
-    print("Gradients:", submodel_grads)
-    hook.remove()
+    # print("IDs, gradnorm per [1,2,3,4] models")
+    for mol,grads in all_grads.items():
+        print(mol)
+        for grad in grads:
+            print("Grad:", grad.shape, torch.norm(grad))
+
+    for hook in hooks:
+        hook.remove()
+
+    
