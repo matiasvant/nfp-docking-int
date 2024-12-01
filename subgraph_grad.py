@@ -25,6 +25,11 @@ import re
 import argparse
 import pickle
 import warnings
+from subgraphs_mask import draw_molecule
+import scipy.sparse as sp
+from scipy.sparse.linalg import eigsh
+from sklearn.cluster import KMeans
+
 
 def contains_problematic_chars(filename):
     # Define a regex pattern for problematic characters (e.g., slashes, backslashes)
@@ -208,15 +213,70 @@ if __name__ == "__main__":
 
             # preds = scaler.inverse_transform(scaled_preds.detach().cpu().numpy().reshape(-1, 1)).T[0].tolist()
             # Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
-            if batch>2: break
+            break
 
-    # print("IDs, gradnorm per [1,2,3,4] models")
-    for mol,grads in all_grads.items():
-        print(mol)
-        for grad in grads:
-            print("Grad:", grad.shape, torch.norm(grad))
+    # # print("IDs, gradnorm per [1,2,3,4] models")
+    # for mol,grads in all_grads.items():
+    #     print(mol)
+    #     for grad in grads:
+    #         print("Grad:", grad.shape, torch.norm(grad))
 
     for hook in hooks:
         hook.remove()
+    
+    ## Gradient based spectral clustering.
+
+    mol_groups = {}
+    for smile,grads in all_grads.items():
+        mol = Chem.MolFromSmiles(smile)
+        adj_matrix = Chem.GetAdjacencyMatrix(mol)
+        adj_matrix = torch.tensor(adj_matrix, dtype=torch.float32)
+
+        # Summing indv. model contributions atm. Get each model output (consider it a featmap) & do Grad-CAM here later
+        node_weights = None
+        num_nodes = adj_matrix.shape[0]
+        for grad in grads:
+            # clip placeholder ats, sum grad-vecs
+            model_node_weights = grad[:num_nodes,:].sum(1)
+            if node_weights is None:
+                node_weights = model_node_weights
+            else:
+                node_weights = node_weights+model_node_weights
+        # node importance/weight = sum of it's latents grads
+        node_weights = node_weights.repeat(num_nodes, 1)
+
+        weight_adj = adj_matrix * node_weights * 500 # scale weights to not be overwhelmed by structure
+        weight_adj = weight_adj + node_weights # add constant so that '0' grads don't erase structure
+
+        # print('mol:', smile)
+        # print("weighted adj matrix:", weight_adj)
+        # print('adj matrix:', adj_matrix)
+
+        def spectral_cluster(A, num_subgroups, rand_state=42):
+            D = np.diag(A.sum(axis=1))
+            L = D - A
+            eigenvalues, eigenvectors = eigsh(L, k=num_subgroups, which='SM')
+            kmeans = KMeans(n_clusters=num_subgroups, random_state=rand_state)
+            kmeans.fit(eigenvectors)
+            # print("L", L.shape)
+            # print("eigenvecs", eigenvectors.shape)
+            # print("kmeanslabels:",kmeans.labels_)
+            return kmeans.labels_
+
+        weight_adj = weight_adj.numpy()
+        atom_groups = spectral_cluster(weight_adj,3) # constant of 3 groups atm; TBD: hueristic methods suggesting # subgroups
+        # print(atom_groups)
+        mol_groups[smile] = atom_groups
+
+    print(mol_groups)
+
+    # save output
+    output_dir = os.path.join(os.getcwd(), 'results', target_dataset)
+    os.makedirs(output_dir, exist_ok=True)
+    dict_path = os.path.join(output_dir, f'{target_dataset}_sb_grad_dict.pkl')
+    with open(dict_path, 'wb') as file:
+        pickle.dump(mol_groups, file)
+
+
 
     
