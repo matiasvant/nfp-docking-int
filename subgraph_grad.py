@@ -28,6 +28,7 @@ import warnings
 from subgraphs_mask import draw_molecule
 import scipy.sparse as sp
 from scipy.sparse.linalg import eigsh
+from scipy.linalg import eigh
 from sklearn.cluster import KMeans
 
 
@@ -213,7 +214,6 @@ if __name__ == "__main__":
 
             # preds = scaler.inverse_transform(scaled_preds.detach().cpu().numpy().reshape(-1, 1)).T[0].tolist()
             # Y = scaler.inverse_transform(scaled_Y.detach().cpu().numpy().reshape(-1, 1)).squeeze()
-            break
 
     # # print("IDs, gradnorm per [1,2,3,4] models")
     # for mol,grads in all_grads.items():
@@ -225,7 +225,6 @@ if __name__ == "__main__":
         hook.remove()
     
     ## Gradient based spectral clustering.
-
     mol_groups = {}
     for smile,grads in all_grads.items():
         mol = Chem.MolFromSmiles(smile)
@@ -246,27 +245,47 @@ if __name__ == "__main__":
         node_weights = node_weights.repeat(num_nodes, 1)
 
         weight_adj = adj_matrix * node_weights * 500 # scale weights to not be overwhelmed by structure
-        weight_adj = weight_adj + node_weights # add constant so that '0' grads don't erase structure
+        weight_adj = weight_adj + adj_matrix # add constant so that '0' grads don't erase structure
 
         # print('mol:', smile)
         # print("weighted adj matrix:", weight_adj)
-        # print('adj matrix:', adj_matrix)
 
-        def spectral_cluster(A, num_subgroups, rand_state=42):
+        def spectral_cluster(A, num_subgroups=0, suggest_subgroups=False, rand_state=42):
             D = np.diag(A.sum(axis=1))
             L = D - A
-            eigenvalues, eigenvectors = eigsh(L, k=num_subgroups, which='SM')
-            kmeans = KMeans(n_clusters=num_subgroups, random_state=rand_state)
-            kmeans.fit(eigenvectors)
-            # print("L", L.shape)
-            # print("eigenvecs", eigenvectors.shape)
-            # print("kmeanslabels:",kmeans.labels_)
+            if not suggest_subgroups:
+                if not (num_subgroups < A.shape[0]):
+                    raise Exception("Can't ask for more subgroups than nodes, or subgr=nodes (trivial)")
+                eigenvalues, eigenvectors = eigsh(L, k=num_subgroups, which='SM')
+                kmeans = KMeans(n_clusters=num_subgroups, random_state=rand_state)
+                kmeans.fit(eigenvectors)
+            else:
+                # bigger gap between k & k+1 = suggests natural seperation into k clusters
+                eigenvalues, eigenvectors = eigh(L) # dense solver; compute all eigens
+                eigengaps = np.diff(eigenvalues)
+                optimal_k = np.argmax(eigengaps) + 1
+                if optimal_k == A.shape[0]:
+                    # 'optimal cut is no cut' case; include all atoms
+                    return np.zeros(A.shape[0])
+                kmeans = KMeans(n_clusters=optimal_k, random_state=rand_state)
+                kmeans.fit(eigenvectors[:,:optimal_k])
+
             return kmeans.labels_
 
+        # test diff. subgroup #s VS heuristic splitting
         weight_adj = weight_adj.numpy()
-        atom_groups = spectral_cluster(weight_adj,3) # constant of 3 groups atm; TBD: hueristic methods suggesting # subgroups
-        # print(atom_groups)
-        mol_groups[smile] = atom_groups
+        test_range = [2,3,4,5]
+        diff_methods_dict = {}
+        for i in test_range:
+            try:
+                atom_groups = spectral_cluster(weight_adj,i)
+                diff_methods_dict[i] = atom_groups
+            except Exception as e:
+                print(f"Dropped: {smile}, {i}-subgroups")
+        
+        atom_groups = spectral_cluster(A=weight_adj,suggest_subgroups=True)
+        diff_methods_dict['suggested'] = atom_groups
+        mol_groups[smile] = diff_methods_dict
 
     print(mol_groups)
 
@@ -276,7 +295,7 @@ if __name__ == "__main__":
     dict_path = os.path.join(output_dir, f'{target_dataset}_sb_grad_dict.pkl')
     with open(dict_path, 'wb') as file:
         pickle.dump(mol_groups, file)
-
+    print("Saved to:", dict_path)
 
 
     
