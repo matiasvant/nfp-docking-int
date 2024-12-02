@@ -281,11 +281,14 @@ if __name__ == "__main__":
                 atom_groups = spectral_cluster(weight_adj,i)
                 diff_methods_dict[i] = atom_groups
             except Exception as e:
-                print(f"Dropped: {smile}, {i}-subgroups")
-        
-        atom_groups = spectral_cluster(A=weight_adj,suggest_subgroups=True)
-        diff_methods_dict['suggested'] = atom_groups
-        mol_groups[smile] = diff_methods_dict
+                print(f"Dropped: {smile}, too many ({i}) subgroups")
+        try:
+            atom_groups = spectral_cluster(A=weight_adj,suggest_subgroups=True)
+            diff_methods_dict['suggested'] = atom_groups
+            mol_groups[smile] = diff_methods_dict
+        except Exception as e:
+            print(f"Unknown err when processing {smile}: {e}")
+            # usually just trying to process a 1-node graph (C), which is meaningless
 
     print(mol_groups)
 
